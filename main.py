@@ -189,8 +189,33 @@ async def _health_server() -> None:
         except Exception as e:
             return web.json_response({"ok": False, "error": str(e)[:200]})
 
+    async def state(_: web.Request) -> web.Response:
+        """Return player state for all guilds."""
+        try:
+            from cogs.music import players as music_players
+            data = {}
+            for gid, p in music_players.items():
+                data[str(gid)] = {
+                    "guild": p.guild.name if p.guild else "?",
+                    "queue_len": len(p.queue),
+                    "current_track": p.current_track.get("title") if p.current_track else None,
+                    "is_playing": p.is_playing(),
+                    "is_paused": p.is_paused(),
+                    "vc_connected": p.voice_client.is_connected() if p.voice_client else False,
+                    "vc_channel": str(p.voice_client.channel) if p.voice_client and p.voice_client.channel else None,
+                    "volume": p.volume,
+                    "filter": p.current_filter,
+                    "repeat_mode": p.repeat_mode,
+                    "last_error": p.last_error,
+                    "has_text_channel": p.text_channel is not None,
+                }
+            return web.json_response(data)
+        except Exception as e:
+            return web.json_response({"error": str(e)[:200]})
+
     app.router.add_get("/", health)
     app.router.add_get("/debug", debug)
+    app.router.add_get("/state", state)
     app.router.add_get("/test", test_youtube)
     port = int(_os.environ.get("PORT", "10000"))
     runner = web.AppRunner(app)

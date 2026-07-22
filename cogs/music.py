@@ -329,6 +329,8 @@ class Music(commands.Cog):
                 return
 
             player = get_player(interaction.guild, vc, self.bot.loop)
+            if interaction.channel and isinstance(interaction.channel, discord.TextChannel):
+                player.text_channel = interaction.channel
 
             await interaction.followup.send(
                 embed=info_embed("🔍 Searching…", f"Looking up `{query}`"), ephemeral=True

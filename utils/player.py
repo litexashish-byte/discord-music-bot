@@ -262,10 +262,11 @@ async def search_tracks(query: str, requester: discord.Member) -> list[Track]:
         return []
 
 
-async def resolve_stream_url(track: Track) -> str:
+async def resolve_stream_url(track: Track, vc: discord.VoiceClient | None = None) -> str:
     """
     Fetch a fresh, playable stream URL.
     Tries the primary config first, then falls back to alternative configs.
+    Sends voice keepalive pings during resolution to prevent timeout.
     """
     loop = asyncio.get_event_loop()
     page_url = track.get("url", "")
@@ -273,34 +274,51 @@ async def resolve_stream_url(track: Track) -> str:
         return track.get("stream_url", "")
 
     configs = [YTDL_STREAM_OPTS] + _STREAM_FALLBACK_CONFIGS
+    per_config_timeout = 10
 
-    for i, extra in enumerate(configs):
-        opts = {**YTDL_STREAM_OPTS, **extra}
-
-        def _resolve(opts=opts) -> str:
+    async def _keepalive() -> None:
+        """Send voice WS pings so Discord doesn't drop the connection."""
+        while True:
+            await asyncio.sleep(5)
             try:
-                with _make_ytdl(opts) as ydl:
-                    data = ydl.extract_info(page_url, download=False)
-                if not data:
+                if vc and vc.is_connected():
+                    vc.ws.send_heartbeat() if hasattr(vc, 'ws') and hasattr(vc.ws, 'send_heartbeat') else None
+            except Exception:
+                pass
+
+    keepalive_task = asyncio.create_task(_keepalive()) if vc else None
+
+    try:
+        for i, extra in enumerate(configs):
+            opts = {**YTDL_STREAM_OPTS, **extra}
+
+            def _resolve(opts=opts) -> str:
+                try:
+                    with _make_ytdl(opts) as ydl:
+                        data = ydl.extract_info(page_url, download=False)
+                    if not data:
+                        return ""
+                    if "entries" in data:
+                        data = data["entries"][0] if data["entries"] else {}
+                    return data.get("url") or ""
+                except Exception as exc:
+                    log.debug("Config %d failed for '%s': %s", i, track.get("title"), exc)
                     return ""
-                if "entries" in data:
-                    data = data["entries"][0] if data["entries"] else {}
-                return data.get("url") or ""
-            except Exception as exc:
-                log.debug("Config %d failed for '%s': %s", i, track.get("title"), exc)
-                return ""
 
-        try:
-            url = await asyncio.wait_for(loop.run_in_executor(None, _resolve), timeout=20)
-            if url:
-                if i > 0:
-                    log.info("Resolved '%s' with fallback config %d", track.get("title"), i)
-                return url
-        except asyncio.TimeoutError:
-            log.warning("Config %d timed out for '%s'", i, track.get("title"))
+            try:
+                url = await asyncio.wait_for(loop.run_in_executor(None, _resolve), timeout=per_config_timeout)
+                if url:
+                    if i > 0:
+                        log.info("Resolved '%s' with fallback config %d", track.get("title"), i)
+                    return url
+            except asyncio.TimeoutError:
+                log.warning("Config %d timed out for '%s'", i, track.get("title"))
 
-    log.warning("All configs failed for '%s'", track.get("title"))
-    return track.get("stream_url", "")
+        log.warning("All configs failed for '%s'", track.get("title"))
+        return track.get("stream_url", "")
+    finally:
+        if keepalive_task:
+            keepalive_task.cancel()
 
 
 async def autocomplete_search(query: str) -> list[str]:
@@ -371,6 +389,8 @@ class MusicPlayer:
         self._loop = bot_loop
         self.queue: list[Track] = []
         self.current_track: Track | None = None
+        self.text_channel: discord.TextChannel | None = None
+        self.last_error: str | None = None
         self.volume: int = 80
         self.current_filter: str = DEFAULT_FILTER
         self.repeat_mode: int = REPEAT_OFF
@@ -390,8 +410,19 @@ class MusicPlayer:
 
     def _after_play(self, error: Exception | None) -> None:
         if error:
-            log.error("Playback error: %s", error)
+            msg = f"Playback error: {error}"
+            log.error(msg)
+            self.last_error = msg
         asyncio.run_coroutine_threadsafe(self._advance(), self._loop)
+
+    async def _safe_send(self, text: str) -> None:
+        """Send an error message to the guild text channel (if set)."""
+        if self.text_channel:
+            try:
+                from utils.embeds import error_embed
+                await self.text_channel.send(embed=error_embed(text))
+            except Exception:
+                pass
 
     async def _advance(self) -> None:
         self._playing = False
@@ -422,15 +453,21 @@ class MusicPlayer:
 
     async def _play_track(self, track: Track) -> None:
         if not self.voice_client or not self.voice_client.is_connected():
-            log.warning("[%s] VoiceClient gone, aborting.", self.guild.name)
+            msg = "VoiceClient disconnected before playback could start."
+            log.warning("[%s] %s", self.guild.name, msg)
+            self.last_error = msg
+            await self._safe_send(msg)
             return
 
         log.info("[%s] Resolving: %s", self.guild.name, track.get("title"))
-        stream_url = await resolve_stream_url(track)
+        stream_url = await resolve_stream_url(track, self.voice_client)
         track["stream_url"] = stream_url
 
         if not stream_url:
+            msg = "Could not resolve a playable stream URL."
             log.error("[%s] No stream URL for '%s' — skipping.", self.guild.name, track.get("title"))
+            self.last_error = msg
+            await self._safe_send(f"**{track.get('title')}**: {msg}")
             await self._advance()
             return
 
@@ -444,8 +481,11 @@ class MusicPlayer:
         try:
             self.voice_client.play(source, after=self._after_play)
         except Exception as e:
-            log.error("[%s] Failed to start playback: %s", self.guild.name, e)
+            msg = f"voice_client.play() failed: {e}"
+            log.error("[%s] %s", self.guild.name, msg)
+            self.last_error = msg
             self._playing = False
+            await self._safe_send(msg)
             await self._advance()
             return
         self._start_progress_updater()
