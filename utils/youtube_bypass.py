@@ -28,7 +28,7 @@ _POTOKEN_FILE = "potoken.txt"
 
 
 class YouTubeBypass:
-    """Bypass YouTube blocking with multi-strategy yt-dlp extraction."""
+    """Bypass YouTube blocking with yt-dlp."""
 
     def __init__(self) -> None:
         self._cookies_opts = self._load_cookies()
@@ -50,10 +50,8 @@ class YouTubeBypass:
             "fragment_retries": 10,
             "ignore_no_formats_error": True,
             "throttled_rate": "200M",
-            # Rate-limit to avoid IP bans
             "sleep_interval_requests": 1.0,
             "sleep_interval": 0.5,
-            # User-agent rotation
             "http_headers": {
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -66,19 +64,10 @@ class YouTubeBypass:
             },
         }
 
-        # ── Extractor args with PO Token + visitor_data ────────────────
-        self._extractor_args: dict[str, Any] = {
-            "youtube": {
-                "player_client": ["android", "web", "ios", "tv"],
-                "player_skip": ["webpage", "configs"],
-                "skip": ["dash", "translated_thumbnails", "hls"],
-                "include_dash_manifest": False,
-                "include_info_json": False,
-                "lang": ["en"],
-            },
-        }
+        # ── Build extractor args ──────────────────────────────────────
+        self._extractor_args: dict[str, Any] = {"youtube": {}}
 
-        # Inject PO Token into extractor args if available
+        # Inject PO Token if available
         pot = self._potoken_opts.get("po_token")
         if pot:
             self._extractor_args["youtube"]["po_token"] = pot
@@ -96,8 +85,9 @@ class YouTubeBypass:
             **self._cookies_opts,
             "default_search": "ytsearch",
             "noplaylist": True,
-            "extractor_args": self._extractor_args,
         }
+        if self._extractor_args.get("youtube"):
+            self._stream_opts["extractor_args"] = self._extractor_args
 
         # ── Search options (flat for speed) ────────────────────────────
         self._search_opts: dict[str, Any] = {
@@ -106,65 +96,16 @@ class YouTubeBypass:
             "default_search": "ytsearch",
             "noplaylist": False,
             "extract_flat": "in_playlist",
-            "extractor_args": self._extractor_args,
         }
+        if self._extractor_args.get("youtube"):
+            self._search_opts["extractor_args"] = self._extractor_args
 
-        # ── Fallback configs (different clients + skip levels) ─────────
+        # ── Fallback configs (different format selectors only) ─────────
         self._fallback_configs: list[dict[str, Any]] = [
-            # 1. Android only (most reliable for audio)
-            {
-                "extractor_args": {
-                    "youtube": {
-                        "player_client": ["android"],
-                        "player_skip": ["webpage", "configs"],
-                        "skip": ["dash", "translated_thumbnails", "hls"],
-                    }
-                },
-                "format": "bestaudio/best",
-            },
-            # 2. Web client with full extraction
-            {
-                "extractor_args": {
-                    "youtube": {
-                        "player_client": ["web"],
-                        "player_skip": ["webpage"],
-                        "skip": [],
-                    }
-                },
-                "format": "bestaudio/best",
-            },
-            # 3. iOS + TV combined
-            {
-                "extractor_args": {
-                    "youtube": {
-                        "player_client": ["ios", "tv"],
-                        "player_skip": ["webpage", "configs"],
-                        "skip": ["dash", "translated_thumbnails"],
-                    }
-                },
-                "format": "bestaudio/best",
-            },
-            # 4. TV embedded (last resort)
-            {
-                "extractor_args": {
-                    "youtube": {
-                        "player_client": ["tv_embedded"],
-                        "player_skip": ["webpage", "configs"],
-                        "skip": ["dash", "hls"],
-                    }
-                },
-                "format": "worstaudio/worst",
-            },
+            {"format": "bestaudio[ext=m4a]/bestaudio/best"},
+            {"format": "bestaudio[protocol=m3u8_native]/bestaudio/best"},
+            {"format": "worstaudio/worst"},
         ]
-
-        # ── Inject PO Token + visitor_data into all fallback configs ──
-        if pot or vd:
-            for fb in self._fallback_configs:
-                ya = fb.setdefault("extractor_args", {}).setdefault("youtube", {})
-                if pot:
-                    ya.setdefault("po_token", pot)
-                if vd:
-                    ya.setdefault("visitor_data", vd)
 
     # ── PO Token loading ───────────────────────────────────────────────
 
