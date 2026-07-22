@@ -35,8 +35,18 @@ def _get_ffmpeg() -> str:
 _COOKIES_FILE = "cookies.txt"
 
 def _try_cookies() -> dict[str, Any]:
-    """Return cookie file path if it exists locally."""
+    """Write cookies from env var if present, or use cookies.txt on disk."""
     import os as _os
+    import base64 as _b64
+    b64 = _os.environ.get("YOUTUBE_COOKIES_B64")
+    if b64:
+        try:
+            raw = _b64.b64decode(b64).decode("utf-8")
+            with open(_COOKIES_FILE, "w", encoding="utf-8") as f:
+                f.write(raw)
+            log.info("Wrote cookies from YOUTUBE_COOKIES_B64 env var")
+        except Exception as exc:
+            log.warning("Failed to decode YOUTUBE_COOKIES_B64: %s", exc)
     if _os.path.isfile(_COOKIES_FILE):
         log.info("Using cookies file: %s", _COOKIES_FILE)
         return {"cookiefile": _COOKIES_FILE}
