@@ -164,28 +164,19 @@ async def _health_server() -> None:
         return web.json_response(info)
 
     async def test_youtube(_: web.Request) -> web.Response:
-        """Test YouTube extraction with a known video ID."""
+        """Test YouTube bypass with a known video ID."""
         try:
-            import yt_dlp
-            import os
-            from utils.player import YTDL_STREAM_OPTS, _STREAM_FALLBACK_CONFIGS
-            configs = [YTDL_STREAM_OPTS] + _STREAM_FALLBACK_CONFIGS
-            video_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-            last_error = ""
-            for i, extra in enumerate(configs):
-                opts = {**YTDL_STREAM_OPTS, **extra}
-                try:
-                    with yt_dlp.YoutubeDL(opts) as ydl:
-                        data = ydl.extract_info(video_url, download=False)
-                    if data:
-                        url = (data.get("entries") or [data])[0].get("url", "") if "entries" in data else data.get("url", "")
-                        if url:
-                            return web.json_response({"ok": True, "config": i, "has_url": True, "url_preview": url[:60]})
-                        return web.json_response({"ok": True, "config": i, "has_url": False, "title": data.get("title", "?")})
-                except Exception as e:
-                    last_error = str(e)[:200]
-                    continue
-            return web.json_response({"ok": False, "error": last_error or "All configs failed"})
+            from utils.youtube_bypass import YouTubeBypass
+            bypass = YouTubeBypass()
+            result = await bypass.get_audio_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+            if result:
+                url, info = result
+                return web.json_response({
+                    "ok": True, "has_url": True, "url_preview": url[:60],
+                    "title": info.get("title", "?"),
+                    "duration_text": info.get("duration_text", "?"),
+                })
+            return web.json_response({"ok": False, "error": "Bypass returned no result"})
         except Exception as e:
             return web.json_response({"ok": False, "error": str(e)[:200]})
 

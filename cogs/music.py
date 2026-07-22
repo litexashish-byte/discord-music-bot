@@ -24,6 +24,7 @@ from utils.embeds import (
 )
 from utils.filters import FILTERS, DEFAULT_FILTER
 from utils.player import MusicPlayer, search_tracks, autocomplete_search, REPEAT_OFF, REPEAT_SONG, REPEAT_QUEUE
+from utils.youtube_bypass import YouTubeBypass
 
 if TYPE_CHECKING:
     from main import LoMaza
@@ -576,6 +577,33 @@ class Music(commands.Cog):
             await interaction.response.send_message(embed=help_embed(), ephemeral=True)
         except Exception as e:
             log.error("Error in /help: %s", e, exc_info=True)
+            await safe_respond(interaction, error_embed("Something went wrong."))
+
+    @app_commands.command(name="testbypass", description="Test YouTube bypass for a query/URL")
+    @app_commands.describe(query="Song name, artist, or paste a URL")
+    async def testbypass(self, interaction: discord.Interaction, query: str) -> None:
+        try:
+            await interaction.response.defer(ephemeral=True)
+            bypass = YouTubeBypass()
+            info = await bypass.get_video_url(query)
+            if not info:
+                await interaction.followup.send(
+                    embed=error_embed("Bypass failed — no results found."), ephemeral=True
+                )
+                return
+            from utils.embeds import SUCCESS_COLOR
+            embed = discord.Embed(
+                title=info.get("title", "Unknown"),
+                description=f"Channel: {info.get('channel', 'Unknown')}",
+                color=SUCCESS_COLOR,
+            )
+            embed.add_field(name="⏱️ Duration", value=info.get("duration_text", "0:00"), inline=True)
+            embed.add_field(name="🔗 URL", value=info.get("url", "N/A"), inline=False)
+            if info.get("thumbnail"):
+                embed.set_thumbnail(url=info["thumbnail"])
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            log.error("Error in /testbypass: %s", e, exc_info=True)
             await safe_respond(interaction, error_embed("Something went wrong."))
 
     # ── Event listeners ────────────────────────────────────────────────
