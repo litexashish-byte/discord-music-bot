@@ -209,23 +209,53 @@ async def _health_server() -> None:
 
     async def test_youtube(_: web.Request) -> web.Response:
         """Test YouTube bypass with a known video ID."""
+        import traceback
         from utils.youtube_bypass import YouTubeBypass
         bypass = YouTubeBypass()
-        result = await bypass.get_audio_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-        if result:
-            url, info = result
+        # Direct yt-dlp test with the exact same opts
+        direct = "?"
+        try:
+            import yt_dlp, asyncio
+            loop = asyncio.get_event_loop()
+            opts = bypass._opts()
+            def _direct():
+                clean = {k: v for k, v in opts.items() if v is not None}
+                try:
+                    with yt_dlp.YoutubeDL(clean) as ydl:
+                        d = ydl.extract_info("https://www.youtube.com/watch?v=dQw4w9WgXcQ", download=False)
+                        return f"OK: {d.get('title','?')[:30]} url={bool(d.get('url'))}"
+                except Exception as e:
+                    return f"FAIL: {e}"
+            direct = await loop.run_in_executor(None, _direct)
+        except Exception as e:
+            direct = f"EXC: {e}"
+
+        # Now use bypass
+        try:
+            result = await bypass.get_audio_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+            if result:
+                url, info = result
+                return web.json_response({
+                    "ok": True,
+                    "has_url": True,
+                    "url_preview": url[:80],
+                    "title": info.get("title", "?"),
+                    "duration_text": info.get("duration_text", "?"),
+                    "direct": direct,
+                })
             return web.json_response({
-                "ok": True,
-                "has_url": True,
-                "url_preview": url[:80],
-                "title": info.get("title", "?"),
-                "duration_text": info.get("duration_text", "?"),
+                "ok": False,
+                "error": "Bypass returned no result",
+                "direct": direct,
+                "cookies_file_exists": _os.path.isfile("cookies.txt"),
             })
-        return web.json_response({
-            "ok": False,
-            "error": "Bypass returned no result",
-            "cookies_file_exists": _os.path.isfile("cookies.txt"),
-        })
+        except Exception as e:
+            return web.json_response({
+                "ok": False,
+                "error": str(e)[:200],
+                "traceback": traceback.format_exc()[-500:],
+                "direct": direct,
+            })
 
     async def state(_: web.Request) -> web.Response:
         """Return player state for all guilds."""
