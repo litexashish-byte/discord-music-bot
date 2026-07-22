@@ -1,5 +1,3 @@
-"""Per-guild music player for Lo Maza."""
-
 from __future__ import annotations
 
 import asyncio
@@ -15,7 +13,6 @@ from utils.youtube_bypass import YouTubeBypass
 
 log = logging.getLogger("lo-maza.player")
 
-# Global YouTubeBypass instance (initialized once)
 _bypass: YouTubeBypass | None = None
 
 def get_bypass() -> YouTubeBypass:
@@ -38,30 +35,7 @@ def _get_ffmpeg() -> str:
             _FFMPEG_PATH = "ffmpeg"
     return _FFMPEG_PATH
 
-FFMPEG_BEFORE_OPTS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
-
-def _build_ffmpeg_before(cookies_file: str = "cookies.txt") -> str:
-    """Return before_options with reconnect + browser User-Agent + cookies."""
-    import os as _os
-    cmd = f'{FFMPEG_BEFORE_OPTS} -user_agent "{UA}"'
-    if _os.path.isfile(cookies_file):
-        try:
-            with open(cookies_file) as f:
-                pairs = []
-                for line in f:
-                    if line.startswith("#") or not line.strip():
-                        continue
-                    cols = line.strip().split("\t")
-                    if len(cols) >= 7:
-                        pairs.append(f"{cols[5]}={cols[6]}")
-            if pairs:
-                cookie_val = "; ".join(pairs)
-                cmd += f' -headers "Cookie: {cookie_val}"'
-        except Exception:
-            pass
-    return cmd
+FFMPEG_BEFORE = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -user_agent \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36\""
 
 
 class Track(TypedDict, total=False):
@@ -93,7 +67,6 @@ def _entry_to_track(info: dict[str, Any], requester: discord.Member) -> Track:
 
 
 async def search_tracks(query: str, requester: discord.Member) -> list[Track]:
-    """Search tracks using YouTubeBypass."""
     bypass = get_bypass()
     info = await bypass.get_video_url(query)
     if not info:
@@ -103,7 +76,6 @@ async def search_tracks(query: str, requester: discord.Member) -> list[Track]:
 
 
 async def resolve_stream_url(track: Track, vc: discord.VoiceClient | None = None) -> str:
-    """Resolve a playable stream URL using YouTubeBypass."""
     bypass = get_bypass()
     page_url = track.get("url", "")
     if not page_url:
@@ -111,53 +83,29 @@ async def resolve_stream_url(track: Track, vc: discord.VoiceClient | None = None
     result = await bypass.get_audio_url(page_url)
     if result:
         stream_url, info = result
+        track["duration"] = float(info.get("duration") or track.get("duration", 0))
         return stream_url
     return track.get("stream_url", "")
 
 
 async def autocomplete_search(query: str) -> list[str]:
-    """Autocomplete using YouTubeBypass."""
     return await get_bypass().search_suggestions(query)
 
 
-# ────────────────────────────────────────────────
-# FFmpeg audio source builder
-# ────────────────────────────────────────────────
-
-def build_audio_source(
-    stream_url: str, volume: int = 80, filter_key: str = DEFAULT_FILTER
-) -> discord.FFmpegOpusAudio:
-    """Create an FFmpegOpusAudio source (no system opus needed)."""
-    vol = volume / 100
-    filter_opts = FILTERS.get(filter_key, FILTERS[DEFAULT_FILTER])["options"]
-    af_parts = [f"volume={vol}"]
-    if filter_opts:
-        af_parts.append(filter_opts)
-    ffmpeg_options = f"-vn -af {','.join(af_parts)}"
-
+def build_audio_source(stream_url: str) -> discord.FFmpegOpusAudio:
     return discord.FFmpegOpusAudio(
         stream_url,
         executable=_get_ffmpeg(),
-        before_options=_build_ffmpeg_before(),
-        options=ffmpeg_options,
+        before_options=FFMPEG_BEFORE,
     )
 
 
-# ────────────────────────────────────────────────
-# Repeat modes
-# ────────────────────────────────────────────────
 REPEAT_OFF   = 0
 REPEAT_SONG  = 1
 REPEAT_QUEUE = 2
 
 
-# ────────────────────────────────────────────────
-# Per-guild MusicPlayer
-# ────────────────────────────────────────────────
-
 class MusicPlayer:
-    """Manages playback state for a single guild."""
-
     def __init__(
         self,
         guild: discord.Guild,
@@ -176,12 +124,11 @@ class MusicPlayer:
         self.repeat_mode: int = REPEAT_OFF
         self.now_playing_message: discord.Message | None = None
         self._playing = False
+        self._advancing = False
         self._idle_task: asyncio.Task | None = None
         self._started_at: float | None = None
         self._paused_at: float | None = None
         self._progress_task: asyncio.Task | None = None
-
-    # ── Internal helpers ───────────────────────────────────────────────
 
     def _cancel_idle(self) -> None:
         if self._idle_task and not self._idle_task.done():
@@ -205,31 +152,37 @@ class MusicPlayer:
                 pass
 
     async def _advance(self) -> None:
+        if self._advancing:
+            return
+        self._advancing = True
         self._playing = False
         self._cancel_idle()
         self._stop_progress_updater()
 
-        if self.repeat_mode == REPEAT_SONG and self.current_track:
-            next_track = self.current_track
-        elif self.queue:
-            if self.repeat_mode == REPEAT_QUEUE and self.current_track:
-                self.queue.append(self.current_track)
-            next_track = self.queue.pop(0)
-            self.current_track = next_track
-        else:
-            self.current_track = None
-            log.info("[%s] Queue empty — will auto-disconnect in 5 min.", self.guild.name)
+        try:
+            if self.repeat_mode == REPEAT_SONG and self.current_track:
+                next_track = self.current_track
+            elif self.queue:
+                if self.repeat_mode == REPEAT_QUEUE and self.current_track:
+                    self.queue.append(self.current_track)
+                next_track = self.queue.pop(0)
+                self.current_track = next_track
+            else:
+                self.current_track = None
+                log.info("[%s] Queue empty — will auto-disconnect in 5 min.", self.guild.name)
 
-            async def _idle_disconnect() -> None:
-                await asyncio.sleep(300)
-                if not self._playing and self.voice_client and self.voice_client.is_connected():
-                    log.info("[%s] Auto-disconnecting after idle.", self.guild.name)
-                    await self.voice_client.disconnect()
+                async def _idle_disconnect() -> None:
+                    await asyncio.sleep(300)
+                    if not self._playing and self.voice_client and self.voice_client.is_connected():
+                        log.info("[%s] Auto-disconnecting after idle.", self.guild.name)
+                        await self.voice_client.disconnect()
 
-            self._idle_task = self._loop.create_task(_idle_disconnect())
-            return
+                self._idle_task = self._loop.create_task(_idle_disconnect())
+                return
 
-        await self._play_track(next_track)
+            await self._play_track(next_track)
+        finally:
+            self._advancing = False
 
     async def _play_track(self, track: Track) -> None:
         if not self.voice_client or not self.voice_client.is_connected():
@@ -259,7 +212,7 @@ class MusicPlayer:
             return
 
         log.info("[%s] Playing: %s", self.guild.name, track.get("title"))
-        source = build_audio_source(stream_url, self.volume, self.current_filter)
+        source = build_audio_source(stream_url)
         self.current_track = track
         self._started_at = time.time()
         self._paused_at = None
@@ -276,18 +229,14 @@ class MusicPlayer:
             return
         self._start_progress_updater()
 
-        # Check if playback actually started (ffmpeg might fail silently)
-        await asyncio.sleep(2)
-        if not self.voice_client or not self.voice_client.is_playing():
-            msg = "Playback did not start — ffmpeg may have failed to connect."
-            log.warning("[%s] %s", self.guild.name, msg)
-            self.last_error = msg
-            self._playing = False
-            await self._safe_send(msg)
-            self.voice_client.stop()
-            await self._advance()
-
-    # ── Position tracking ─────────────────────────────────────────────
+        # Send auto Now Playing embed to channel
+        if self.text_channel:
+            try:
+                from utils.embeds import now_playing_embed
+                embed = now_playing_embed(self, track)
+                self.now_playing_message = await self.text_channel.send(embed=embed)
+            except Exception as exc:
+                log.warning("Failed to send now-playing: %s", exc)
 
     def get_position(self) -> float:
         if self._paused_at is not None and self._started_at is not None:
@@ -320,13 +269,11 @@ class MusicPlayer:
             except Exception:
                 pass
 
-    # ── Public API ─────────────────────────────────────────────────────
-
     def enqueue(self, track: Track) -> None:
         self.queue.append(track)
 
     async def start(self) -> None:
-        if self._playing or (self.voice_client and self.voice_client.is_playing()):
+        if self._playing or self._advancing or (self.voice_client and self.voice_client.is_playing()):
             return
         await self._advance()
 
@@ -360,11 +307,6 @@ class MusicPlayer:
 
     def set_volume(self, volume: int) -> None:
         self.volume = max(0, min(200, volume))
-        if self.voice_client and self.voice_client.is_playing() and self.current_track:
-            stream_url = self.current_track.get("stream_url") or self.current_track.get("url", "")
-            if stream_url:
-                source = build_audio_source(stream_url, self.volume, self.current_filter)
-                self.voice_client.source = source
 
     def shuffle(self) -> None:
         random.shuffle(self.queue)
@@ -377,13 +319,4 @@ class MusicPlayer:
 
     async def apply_filter(self, filter_key: str) -> bool:
         self.current_filter = filter_key
-        if not self.current_track or not self.voice_client:
-            return True
-        if not self.voice_client.is_playing() and not self.voice_client.is_paused():
-            return True
-        stream_url = self.current_track.get("stream_url") or self.current_track.get("url", "")
-        if not stream_url:
-            return False
-        source = build_audio_source(stream_url, self.volume, filter_key)
-        self.voice_client.source = source
         return True

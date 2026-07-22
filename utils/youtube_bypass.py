@@ -55,6 +55,7 @@ class YouTubeBypass:
         self._stream_opts: dict[str, Any] = {
             **self._base_opts,
             **self._cookies_opts,
+            "default_search": "ytsearch",
             "noplaylist": True,
             "extractor_args": self._extractor_args,
         }
@@ -165,7 +166,8 @@ class YouTubeBypass:
                     if data:
                         break
             else:
-                data = self._extract(f"ytsearch1:{query}", self._search_opts)
+                # Full extraction (not flat) so we get duration
+                data = self._extract(f"ytsearch1:{query}", self._stream_opts)
             if not data:
                 return None
             info = self._build_info(data)
