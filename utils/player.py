@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from typing import Any, TypedDict
 
 import discord
@@ -413,6 +414,7 @@ class MusicPlayer:
             msg = f"Playback error: {error}"
             log.error(msg)
             self.last_error = msg
+            asyncio.run_coroutine_threadsafe(self._safe_send(msg), self._loop)
         asyncio.run_coroutine_threadsafe(self._advance(), self._loop)
 
     async def _safe_send(self, text: str) -> None:
@@ -471,7 +473,13 @@ class MusicPlayer:
             await self._advance()
             return
 
-        import time
+        if not self.voice_client or not self.voice_client.is_connected():
+            msg = "VoiceClient disconnected during URL resolution."
+            log.warning("[%s] %s", self.guild.name, msg)
+            self.last_error = msg
+            await self._safe_send(msg)
+            return
+
         log.info("[%s] Playing: %s", self.guild.name, track.get("title"))
         source = build_audio_source(stream_url, self.volume, self.current_filter)
         self.current_track = track
@@ -496,7 +504,6 @@ class MusicPlayer:
         if self._paused_at is not None and self._started_at is not None:
             return self._paused_at - self._started_at
         if self._started_at is not None:
-            import time
             return time.time() - self._started_at
         return 0
 
@@ -552,13 +559,11 @@ class MusicPlayer:
     def pause(self) -> None:
         if self.voice_client and self.voice_client.is_playing():
             self.voice_client.pause()
-            import time
             self._paused_at = time.time()
 
     def resume(self) -> None:
         if self.voice_client and self.voice_client.is_paused():
             self.voice_client.resume()
-            import time
             if self._paused_at is not None and self._started_at is not None:
                 paused_duration = time.time() - self._paused_at
                 self._started_at += paused_duration
