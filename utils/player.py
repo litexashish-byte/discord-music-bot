@@ -104,6 +104,7 @@ async def autocomplete_search(query: str) -> list[str]:
 def build_audio_source(
     stream_url: str, volume: int = 80, filter_key: str = DEFAULT_FILTER
 ) -> discord.FFmpegOpusAudio:
+    """Create an FFmpegOpusAudio source (no system opus needed)."""
     vol = volume / 100
     filter_opts = FILTERS.get(filter_key, FILTERS[DEFAULT_FILTER])["options"]
     af_parts = [f"volume={vol}"]
@@ -251,6 +252,17 @@ class MusicPlayer:
             await self._advance()
             return
         self._start_progress_updater()
+
+        # Check if playback actually started (ffmpeg might fail silently)
+        await asyncio.sleep(2)
+        if not self.voice_client or not self.voice_client.is_playing():
+            msg = "Playback did not start — ffmpeg may have failed to connect."
+            log.warning("[%s] %s", self.guild.name, msg)
+            self.last_error = msg
+            self._playing = False
+            await self._safe_send(msg)
+            self.voice_client.stop()
+            await self._advance()
 
     # ── Position tracking ─────────────────────────────────────────────
 

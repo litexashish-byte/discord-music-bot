@@ -71,7 +71,7 @@ class LoMaza(commands.Bot):
                 except Exception:
                     continue
             else:
-                log.error("Opus library not found — voice audio will not work!")
+                log.info("System opus not loaded — not needed (using FFmpegOpusAudio)")
         await self.load_extension("cogs.music")
         log.info("Loaded cog: cogs.music")
 
