@@ -322,11 +322,17 @@ class MusicPlayer:
         import time
         log.info("[%s] Playing: %s", self.guild.name, track.get("title"))
         source = build_audio_source(stream_url, self.volume, self.current_filter)
-        self._playing = True
         self.current_track = track
         self._started_at = time.time()
         self._paused_at = None
-        self.voice_client.play(source, after=self._after_play)
+        self._playing = True
+        try:
+            self.voice_client.play(source, after=self._after_play)
+        except Exception as e:
+            log.error("[%s] Failed to start playback: %s", self.guild.name, e)
+            self._playing = False
+            await self._advance()
+            return
         self._start_progress_updater()
 
     # ── Position tracking ─────────────────────────────────────────────
