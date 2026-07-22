@@ -1,0 +1,435 @@
+"""Per-guild music player for Lo Maza."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import random
+from typing import Any, TypedDict
+
+import discord
+import yt_dlp
+
+from utils.filters import FILTERS, DEFAULT_FILTER
+
+log = logging.getLogger("lo-maza.player")
+
+# ────────────────────────────────────────────────
+# yt-dlp configuration
+# ────────────────────────────────────────────────
+
+# Shared base options
+_BASE_OPTS: dict[str, Any] = {
+    "format": "bestaudio/best",
+    "nocheckcertificate": True,
+    "ignoreerrors": False,          # We want errors so we can handle them
+    "logtostderr": False,
+    "quiet": True,
+    "no_warnings": True,
+    "source_address": "0.0.0.0",
+    "socket_timeout": 20,
+    "retries": 3,
+}
+
+# Search-only options — extract_flat avoids fetching stream URLs,
+# which prevents YouTube bot-detection from triggering during search.
+YTDL_SEARCH_OPTS: dict[str, Any] = {
+    **_BASE_OPTS,
+    "default_search": "ytsearch",
+    "noplaylist": False,
+    "extract_flat": "in_playlist",  # metadata only, no stream URL needed
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["tv", "ios"],
+        }
+    },
+}
+
+# Stream-resolution options — uses TV client which bypasses YouTube bot detection.
+# tv_embedded is the most reliable client for server-side playback in 2026.
+YTDL_STREAM_OPTS: dict[str, Any] = {
+    **_BASE_OPTS,
+    "noplaylist": True,
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["tv_embedded", "tv", "ios"],
+        }
+    },
+}
+
+FFMPEG_BEFORE_OPTS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+
+
+class Track(TypedDict, total=False):
+    title: str
+    url: str
+    stream_url: str
+    duration: float
+    thumbnail: str
+    artist: str
+    requester: str
+    requester_avatar: str
+
+
+# ────────────────────────────────────────────────
+# Helpers
+# ────────────────────────────────────────────────
+
+def _make_ytdl(opts: dict[str, Any], extra: dict[str, Any] | None = None) -> yt_dlp.YoutubeDL:
+    merged = {**opts, **(extra or {})}
+    return yt_dlp.YoutubeDL(merged)
+
+
+def _entry_to_track(entry: dict[str, Any], requester: discord.Member) -> Track:
+    """Convert a yt-dlp info dict (flat or full) into a Track."""
+    # Flat entries from extract_flat have 'id' and 'title' but no stream url
+    video_id = entry.get("id", "")
+    page_url = entry.get("webpage_url") or (
+        f"https://www.youtube.com/watch?v={video_id}" if video_id else entry.get("url", "")
+    )
+    # Thumbnail: full entries have 'thumbnail', flat entries need construction
+    thumbnail = entry.get("thumbnail") or ""
+    if not thumbnail and video_id:
+        thumbnail = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+    if not thumbnail:
+        thumbnails = entry.get("thumbnails") or []
+        thumbnail = thumbnails[-1].get("url", "") if thumbnails else ""
+
+    return Track(
+        title=entry.get("title", "Unknown"),
+        url=page_url,
+        stream_url=entry.get("url", ""),  # empty for flat entries — resolved before playback
+        duration=float(entry.get("duration") or 0),
+        thumbnail=thumbnail,
+        artist=entry.get("uploader") or entry.get("channel") or entry.get("channel_id") or "Unknown",
+        requester=str(requester),
+        requester_avatar=(
+            str(requester.display_avatar.url)
+            if hasattr(requester, "display_avatar")
+            else ""
+        ),
+    )
+
+
+# ────────────────────────────────────────────────
+# Search
+# ────────────────────────────────────────────────
+
+async def search_tracks(query: str, requester: discord.Member) -> list[Track]:
+    """
+    Search/resolve tracks.
+    For text queries  → extract_flat search (no stream URLs, avoids bot detection).
+    For direct URLs   → full extraction with TV client.
+    """
+    loop = asyncio.get_event_loop()
+
+    def _extract() -> list[Track]:
+        is_url = query.startswith(("http://", "https://"))
+
+        if is_url:
+            # Direct URL: do a full extract with the stream-capable client
+            with _make_ytdl(YTDL_STREAM_OPTS) as ydl:
+                data = ydl.extract_info(query, download=False)
+        else:
+            # Text search: use flat extraction to avoid bot detection
+            search_query = f"ytsearch5:{query}"
+            with _make_ytdl(YTDL_SEARCH_OPTS) as ydl:
+                data = ydl.extract_info(search_query, download=False)
+
+        if not data:
+            return []
+
+        entries = data.get("entries") or [data]
+        tracks: list[Track] = []
+        for entry in entries:
+            if entry and entry.get("title"):
+                tracks.append(_entry_to_track(entry, requester))
+        return tracks
+
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(None, _extract), timeout=30)
+    except asyncio.TimeoutError:
+        log.error("search_tracks timed out for query: %s", query)
+        return []
+    except Exception as exc:
+        log.error("search_tracks error for '%s': %s", query, exc)
+        return []
+
+
+async def resolve_stream_url(track: Track) -> str:
+    """
+    Fetch a fresh, playable stream URL using the TV client (bypasses bot detection).
+    Falls back to cached stream_url if resolution fails.
+    """
+    loop = asyncio.get_event_loop()
+    page_url = track.get("url", "")
+    if not page_url:
+        return track.get("stream_url", "")
+
+    def _resolve() -> str:
+        with _make_ytdl(YTDL_STREAM_OPTS) as ydl:
+            data = ydl.extract_info(page_url, download=False)
+        if not data:
+            return ""
+        # Flatten playlist wrapper if needed
+        if "entries" in data:
+            data = data["entries"][0] if data["entries"] else {}
+        return data.get("url") or ""
+
+    try:
+        url = await asyncio.wait_for(loop.run_in_executor(None, _resolve), timeout=25)
+        if url:
+            return url
+        log.warning("resolve_stream_url got empty URL for '%s', using cached", track.get("title"))
+        return track.get("stream_url", "")
+    except asyncio.TimeoutError:
+        log.warning("resolve_stream_url timed out for '%s'", track.get("title"))
+        return track.get("stream_url", "")
+    except Exception as exc:
+        log.error("resolve_stream_url error for '%s': %s", track.get("title"), exc)
+        return track.get("stream_url", "")
+
+
+async def autocomplete_search(query: str) -> list[str]:
+    """Return up to 5 title suggestions for autocomplete (must respond in <2.5 s)."""
+    if not query or len(query) < 2:
+        return []
+    loop = asyncio.get_event_loop()
+
+    def _search() -> list[str]:
+        with _make_ytdl(YTDL_SEARCH_OPTS) as ydl:
+            data = ydl.extract_info(f"ytsearch5:{query}", download=False)
+        if not data or "entries" not in data:
+            return []
+        return [e.get("title", "") for e in data["entries"] if e and e.get("title")][:5]
+
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(None, _search), timeout=2.5)
+    except (asyncio.TimeoutError, Exception):
+        return []
+
+
+# ────────────────────────────────────────────────
+# FFmpeg audio source builder
+# ────────────────────────────────────────────────
+
+def build_audio_source(
+    stream_url: str, volume: int = 80, filter_key: str = DEFAULT_FILTER
+) -> discord.PCMVolumeTransformer:
+    """Create a PCMVolumeTransformer with optional FFmpeg audio filter."""
+    filter_opts = FILTERS.get(filter_key, FILTERS[DEFAULT_FILTER])["options"]
+    ffmpeg_options = "-vn"
+    if filter_opts:
+        ffmpeg_options += f" -af {filter_opts}"
+
+    source = discord.FFmpegPCMAudio(
+        stream_url,
+        before_options=FFMPEG_BEFORE_OPTS,
+        options=ffmpeg_options,
+    )
+    return discord.PCMVolumeTransformer(source, volume=volume / 100)
+
+
+# ────────────────────────────────────────────────
+# Repeat modes
+# ────────────────────────────────────────────────
+REPEAT_OFF   = 0
+REPEAT_SONG  = 1
+REPEAT_QUEUE = 2
+
+
+# ────────────────────────────────────────────────
+# Per-guild MusicPlayer
+# ────────────────────────────────────────────────
+
+class MusicPlayer:
+    """Manages playback state for a single guild."""
+
+    def __init__(
+        self,
+        guild: discord.Guild,
+        voice_client: discord.VoiceClient,
+        bot_loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        self.guild = guild
+        self.voice_client = voice_client
+        self._loop = bot_loop
+        self.queue: list[Track] = []
+        self.current_track: Track | None = None
+        self.volume: int = 80
+        self.current_filter: str = DEFAULT_FILTER
+        self.repeat_mode: int = REPEAT_OFF
+        self.now_playing_message: discord.Message | None = None
+        self._playing = False
+        self._idle_task: asyncio.Task | None = None
+        self._started_at: float | None = None
+        self._paused_at: float | None = None
+        self._progress_task: asyncio.Task | None = None
+
+    # ── Internal helpers ───────────────────────────────────────────────
+
+    def _cancel_idle(self) -> None:
+        if self._idle_task and not self._idle_task.done():
+            self._idle_task.cancel()
+            self._idle_task = None
+
+    def _after_play(self, error: Exception | None) -> None:
+        if error:
+            log.error("Playback error: %s", error)
+        asyncio.run_coroutine_threadsafe(self._advance(), self._loop)
+
+    async def _advance(self) -> None:
+        self._playing = False
+        self._cancel_idle()
+        self._stop_progress_updater()
+
+        if self.repeat_mode == REPEAT_SONG and self.current_track:
+            next_track = self.current_track
+        elif self.queue:
+            if self.repeat_mode == REPEAT_QUEUE and self.current_track:
+                self.queue.append(self.current_track)
+            next_track = self.queue.pop(0)
+            self.current_track = next_track
+        else:
+            self.current_track = None
+            log.info("[%s] Queue empty — will auto-disconnect in 5 min.", self.guild.name)
+
+            async def _idle_disconnect() -> None:
+                await asyncio.sleep(300)
+                if not self._playing and self.voice_client and self.voice_client.is_connected():
+                    log.info("[%s] Auto-disconnecting after idle.", self.guild.name)
+                    await self.voice_client.disconnect()
+
+            self._idle_task = self._loop.create_task(_idle_disconnect())
+            return
+
+        await self._play_track(next_track)
+
+    async def _play_track(self, track: Track) -> None:
+        if not self.voice_client or not self.voice_client.is_connected():
+            log.warning("[%s] VoiceClient gone, aborting.", self.guild.name)
+            return
+
+        log.info("[%s] Resolving: %s", self.guild.name, track.get("title"))
+        stream_url = await resolve_stream_url(track)
+        track["stream_url"] = stream_url
+
+        if not stream_url:
+            log.error("[%s] No stream URL for '%s' — skipping.", self.guild.name, track.get("title"))
+            await self._advance()
+            return
+
+        import time
+        log.info("[%s] Playing: %s", self.guild.name, track.get("title"))
+        source = build_audio_source(stream_url, self.volume, self.current_filter)
+        self._playing = True
+        self.current_track = track
+        self._started_at = time.time()
+        self._paused_at = None
+        self.voice_client.play(source, after=self._after_play)
+        self._start_progress_updater()
+
+    # ── Position tracking ─────────────────────────────────────────────
+
+    def get_position(self) -> float:
+        if self._paused_at is not None and self._started_at is not None:
+            return self._paused_at - self._started_at
+        if self._started_at is not None:
+            import time
+            return time.time() - self._started_at
+        return 0
+
+    def _start_progress_updater(self) -> None:
+        self._stop_progress_updater()
+        self._progress_task = self._loop.create_task(self._update_progress_loop())
+
+    def _stop_progress_updater(self) -> None:
+        if self._progress_task and not self._progress_task.done():
+            self._progress_task.cancel()
+            self._progress_task = None
+
+    async def _update_progress_loop(self) -> None:
+        while True:
+            await asyncio.sleep(5)
+            if not self.now_playing_message:
+                continue
+            if not self.is_playing() and not self.is_paused():
+                continue
+            try:
+                from utils.embeds import now_playing_embed
+                if self.current_track:
+                    embed = now_playing_embed(self, self.current_track)
+                    await self.now_playing_message.edit(embed=embed)
+            except Exception:
+                pass
+
+    # ── Public API ─────────────────────────────────────────────────────
+
+    def enqueue(self, track: Track) -> None:
+        self.queue.append(track)
+
+    async def start(self) -> None:
+        if self._playing or self.voice_client.is_playing():
+            return
+        await self._advance()
+
+    def skip(self) -> None:
+        if self.voice_client and (self.voice_client.is_playing() or self.voice_client.is_paused()):
+            self.voice_client.stop()
+
+    def stop(self) -> None:
+        self._cancel_idle()
+        self._stop_progress_updater()
+        self.queue.clear()
+        self.current_track = None
+        self._playing = False
+        self._started_at = None
+        self._paused_at = None
+        if self.voice_client and (self.voice_client.is_playing() or self.voice_client.is_paused()):
+            self.voice_client.stop()
+
+    def pause(self) -> None:
+        if self.voice_client and self.voice_client.is_playing():
+            self.voice_client.pause()
+            import time
+            self._paused_at = time.time()
+
+    def resume(self) -> None:
+        if self.voice_client and self.voice_client.is_paused():
+            self.voice_client.resume()
+            import time
+            if self._paused_at is not None and self._started_at is not None:
+                paused_duration = time.time() - self._paused_at
+                self._started_at += paused_duration
+            self._paused_at = None
+
+    def set_volume(self, volume: int) -> None:
+        self.volume = max(0, min(200, volume))
+        if (
+            self.voice_client
+            and self.voice_client.source
+            and isinstance(self.voice_client.source, discord.PCMVolumeTransformer)
+        ):
+            self.voice_client.source.volume = self.volume / 100
+
+    def shuffle(self) -> None:
+        random.shuffle(self.queue)
+
+    def is_playing(self) -> bool:
+        return bool(self.voice_client and self.voice_client.is_playing())
+
+    def is_paused(self) -> bool:
+        return bool(self.voice_client and self.voice_client.is_paused())
+
+    async def apply_filter(self, filter_key: str) -> bool:
+        self.current_filter = filter_key
+        if not self.current_track or not self.voice_client:
+            return True
+        if not self.voice_client.is_playing() and not self.voice_client.is_paused():
+            return True
+        stream_url = self.current_track.get("stream_url") or self.current_track.get("url", "")
+        if not stream_url:
+            return False
+        source = build_audio_source(stream_url, self.volume, filter_key)
+        self.voice_client.source = source
+        return True
