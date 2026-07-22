@@ -1,5 +1,4 @@
 aiohttp
-bgutil-ytdlp-pot-provider>=2026.1.0
 cryptography
 discord.py[voice]
 imageio-ffmpeg
