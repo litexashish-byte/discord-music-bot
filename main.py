@@ -270,6 +270,42 @@ async def _health_server() -> None:
             import traceback
             yt_result = f"EXCEPTION: {str(e)[:200]} | {traceback.format_exc()[-300:]}"
 
+        # Test with EXACT bypass options to find which setting breaks it
+        bypass_debug = "not_tried"
+        try:
+            import yt_dlp
+            from utils.youtube_bypass import YouTubeBypass
+            b = YouTubeBypass()
+            loop = asyncio.get_event_loop()
+            configs = [b._stream_opts] + b._fallback_configs
+            bypass_debug_results = []
+            for idx, extra in enumerate(configs):
+                def _test_opts(opts=extra, idx=idx):
+                    base = dict(b._stream_opts)
+                    # Make a fresh copy with merger
+                    merged = {}
+                    for k in set(list(base.keys()) + list(opts.keys())):
+                        if k == "extractor_args" and k in base and k in opts:
+                            merged[k] = base[k].copy()
+                            merged[k].update(opts[k])
+                        else:
+                            merged[k] = opts.get(k, base.get(k))
+                    merged["quiet"] = True
+                    try:
+                        with yt_dlp.YoutubeDL(merged) as ydl:
+                            data = ydl.extract_info("https://www.youtube.com/watch?v=dQw4w9WgXcQ", download=False)
+                            if data:
+                                return f"C{idx}:OK title={data.get('title','?')[:20]} has_url={bool(data.get('url'))}"
+                            return f"C{idx}:no_data"
+                    except Exception as e:
+                        return f"C{idx}:FAIL {str(e)[:150]}"
+                r = await loop.run_in_executor(None, _test_opts)
+                bypass_debug_results.append(r)
+            bypass_debug = " | ".join(bypass_debug_results)
+        except Exception as e:
+            import traceback
+            bypass_debug = f"EXCEPTION: {e} {traceback.format_exc()[-300:]}"
+
         from utils.youtube_bypass import YouTubeBypass
         bypass = YouTubeBypass()
         result = await bypass.get_audio_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
@@ -283,12 +319,14 @@ async def _health_server() -> None:
                 "duration_text": info.get("duration_text", "?"),
                 "manual_cookie_result": manual_cookie_result,
                 "yt_direct_test": yt_result,
+                "bypass_debug": bypass_debug,
             })
         return web.json_response({
             "ok": False,
             "error": "Bypass returned no result",
             "manual_cookie_result": manual_cookie_result,
             "yt_direct_test": yt_result,
+            "bypass_debug": bypass_debug,
             "debug": {
                 "cookies_file_exists": cookies_file_ok,
                 "cookies_file_content_prefix": cookies_file_content,
