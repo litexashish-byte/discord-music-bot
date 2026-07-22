@@ -216,13 +216,23 @@ async def _health_server() -> None:
         if cookies_file_ok:
             try:
                 with open("cookies.txt", "r", encoding="utf-8") as f:
-                    cookies_file_content = f.read(200)
+                    cookies_file_content = f.read(300)
             except Exception:
                 pass
         # Check env var
         env_val = _os.environ.get("YOUTUBE_COOKIES_B64", "")
         env_prefix = env_val[:60] if env_val else ""
+        # Manually test cookie writing
+        manual_cookie_result = "not_tried"
         try:
+            from utils.youtube_bypass import YouTubeBypass
+            cookie_opts = YouTubeBypass._load_cookies()
+            manual_cookie_result = f"cookies_file_exists={_os.path.isfile('cookies.txt')}, opts_keys={list(cookie_opts.keys())}, opts_cookiefile={cookie_opts.get('cookiefile', '')}"
+        except Exception as e:
+            manual_cookie_result = f"error={e}"
+        # Try direct yt-dlp extraction (no cookies)
+        try:
+            import yt_dlp
             from utils.youtube_bypass import YouTubeBypass
             bypass = YouTubeBypass()
             result = await bypass.get_audio_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
@@ -234,10 +244,12 @@ async def _health_server() -> None:
                     "url_preview": url[:80],
                     "title": info.get("title", "?"),
                     "duration_text": info.get("duration_text", "?"),
+                    "manual_cookie_result": manual_cookie_result,
                 })
             return web.json_response({
                 "ok": False,
                 "error": "Bypass returned no result",
+                "manual_cookie_result": manual_cookie_result,
                 "debug": {
                     "cookies_file_exists": cookies_file_ok,
                     "cookies_file_content_prefix": cookies_file_content,
@@ -251,6 +263,7 @@ async def _health_server() -> None:
                 "ok": False,
                 "error": str(e)[:300],
                 "traceback": tb[-500:],
+                "manual_cookie_result": manual_cookie_result,
                 "debug": {
                     "cookies_file_exists": cookies_file_ok,
                     "cookies_file_content_prefix": cookies_file_content,
