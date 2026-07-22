@@ -139,14 +139,31 @@ class LoMaza(commands.Bot):
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
+async def _health_server() -> None:
+    """Minimal HTTP server for Render health checks."""
+    import aiohttp.web as web
+    app = web.Application()
+    async def health(_: web.Request) -> web.Response:
+        return web.Response(text="ok")
+    app.router.add_get("/", health)
+    port = int(os.environ.get("PORT", "10000"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    log.info("Health server started on port %d", port)
+
+
 async def main() -> None:
     token = os.environ.get("DISCORD_TOKEN")
     if not token:
         log.error("DISCORD_TOKEN environment variable is not set. Exiting.")
         sys.exit(1)
 
-    async with LoMaza() as bot:
-        await bot.start(token)
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(_health_server())
+        async with LoMaza() as bot:
+            await bot.start(token)
 
 
 if __name__ == "__main__":
