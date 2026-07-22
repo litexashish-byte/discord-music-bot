@@ -14,6 +14,20 @@ from utils.filters import FILTERS, DEFAULT_FILTER
 
 log = logging.getLogger("lo-maza.player")
 
+_FFMPEG_PATH: str | None = None
+
+def _get_ffmpeg() -> str:
+    global _FFMPEG_PATH
+    if _FFMPEG_PATH is None:
+        try:
+            import imageio_ffmpeg
+            _FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+            log.info("Found ffmpeg via imageio-ffmpeg: %s", _FFMPEG_PATH)
+        except Exception as exc:
+            log.warning("imageio-ffmpeg not available, falling back to PATH ffmpeg: %s", exc)
+            _FFMPEG_PATH = "ffmpeg"
+    return _FFMPEG_PATH
+
 # ────────────────────────────────────────────────
 # yt-dlp configuration
 # ────────────────────────────────────────────────
@@ -215,19 +229,21 @@ async def autocomplete_search(query: str) -> list[str]:
 
 def build_audio_source(
     stream_url: str, volume: int = 80, filter_key: str = DEFAULT_FILTER
-) -> discord.PCMVolumeTransformer:
-    """Create a PCMVolumeTransformer with optional FFmpeg audio filter."""
+) -> discord.FFmpegOpusAudio:
+    """Create an FFmpegOpusAudio with volume applied via ffmpeg filter."""
+    vol = volume / 100
     filter_opts = FILTERS.get(filter_key, FILTERS[DEFAULT_FILTER])["options"]
-    ffmpeg_options = "-vn"
+    af_parts = [f"volume={vol}"]
     if filter_opts:
-        ffmpeg_options += f" -af {filter_opts}"
+        af_parts.append(filter_opts)
+    ffmpeg_options = f"-vn -af {','.join(af_parts)}"
 
-    source = discord.FFmpegPCMAudio(
+    return discord.FFmpegOpusAudio(
         stream_url,
+        executable=_get_ffmpeg(),
         before_options=FFMPEG_BEFORE_OPTS,
         options=ffmpeg_options,
     )
-    return discord.PCMVolumeTransformer(source, volume=volume / 100)
 
 
 # ────────────────────────────────────────────────
@@ -411,12 +427,11 @@ class MusicPlayer:
 
     def set_volume(self, volume: int) -> None:
         self.volume = max(0, min(200, volume))
-        if (
-            self.voice_client
-            and self.voice_client.source
-            and isinstance(self.voice_client.source, discord.PCMVolumeTransformer)
-        ):
-            self.voice_client.source.volume = self.volume / 100
+        if self.voice_client and self.voice_client.is_playing() and self.current_track:
+            stream_url = self.current_track.get("stream_url") or self.current_track.get("url", "")
+            if stream_url:
+                source = build_audio_source(stream_url, self.volume, self.current_filter)
+                self.voice_client.source = source
 
     def shuffle(self) -> None:
         random.shuffle(self.queue)

@@ -160,10 +160,12 @@ async def main() -> None:
         log.error("DISCORD_TOKEN environment variable is not set. Exiting.")
         sys.exit(1)
 
-    async with asyncio.TaskGroup() as tg:
-        tg.create_task(_health_server())
-        async with LoMaza() as bot:
+    async with LoMaza() as bot:
+        server_task = asyncio.create_task(_health_server())
+        try:
             await bot.start(token)
+        finally:
+            server_task.cancel()
 
 
 if __name__ == "__main__":
