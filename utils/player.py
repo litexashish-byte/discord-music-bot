@@ -35,7 +35,12 @@ def _get_ffmpeg() -> str:
             _FFMPEG_PATH = "ffmpeg"
     return _FFMPEG_PATH
 
-FFMPEG_BEFORE = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -user_agent \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36\""
+FFMPEG_BEFORE = (
+    "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+    "-rw_timeout 30000000 -analyzeduration 0 "
+    "-user_agent \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36\""
+)
 
 
 class Track(TypedDict, total=False):
@@ -75,16 +80,37 @@ async def search_tracks(query: str, requester: discord.Member) -> list[Track]:
     return [_entry_to_track(info, requester)]
 
 
-async def resolve_stream_url(track: Track, vc: discord.VoiceClient | None = None) -> str:
+async def resolve_stream_url(
+    track: Track,
+    vc: discord.VoiceClient | None = None,
+    max_retries: int = 2,
+) -> str:
+    """Resolve stream URL with retry on failure."""
     bypass = get_bypass()
     page_url = track.get("url", "")
     if not page_url:
         return track.get("stream_url", "")
-    result = await bypass.get_audio_url(page_url)
-    if result:
-        stream_url, info = result
-        track["duration"] = float(info.get("duration") or track.get("duration", 0))
-        return stream_url
+
+    last_error: str | None = None
+    for attempt in range(1 + max_retries):
+        if attempt > 0:
+            log.info(
+                "Retry %d/%d resolving stream for %s",
+                attempt, max_retries, track.get("title", "?"),
+            )
+            await asyncio.sleep(1.0 * attempt)  # Linear backoff
+
+        result = await bypass.get_audio_url(page_url)
+        if result:
+            stream_url, info = result
+            track["duration"] = float(info.get("duration") or track.get("duration", 0))
+            return stream_url
+        last_error = "Bypass returned no stream URL"
+
+    log.error(
+        "Stream resolution failed after %d attempts for '%s': %s",
+        1 + max_retries, track.get("title", "?"), last_error,
+    )
     return track.get("stream_url", "")
 
 

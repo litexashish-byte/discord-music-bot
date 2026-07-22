@@ -15,6 +15,13 @@ import sys
 import discord
 from discord.ext import commands
 
+import yt_dlp
+
+try:
+    yt_dlp_version = yt_dlp.__version__
+except AttributeError:
+    yt_dlp_version = str(getattr(yt_dlp, "version", "unknown"))
+
 # ── Logging setup ──────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -153,7 +160,11 @@ async def _health_server() -> None:
             "status": "running",
             "has_token": bool(_os.environ.get("DISCORD_TOKEN")),
             "has_cookies_env": bool(_os.environ.get("YOUTUBE_COOKIES_B64")),
+            "has_potoken_env": bool(_os.environ.get("YOUTUBE_POTOKEN")),
+            "has_visitor_data_env": bool(_os.environ.get("YOUTUBE_VISITOR_DATA")),
             "cookies_file_exists": _os.path.isfile("cookies.txt"),
+            "potoken_file_exists": _os.path.isfile("potoken.txt"),
+            "yt_dlp_version": yt_dlp_version,
         }
         if info["cookies_file_exists"]:
             try:
@@ -161,6 +172,12 @@ async def _health_server() -> None:
                 info["cookies_file_size"] = sz
             except Exception:
                 pass
+        # Check PO Token provider plugin
+        try:
+            import bgutil_ytdlp_pot_provider  # type: ignore  # noqa: F401
+            info["pot_provider_plugin"] = "bgutil-ytdlp-pot-provider (installed)"
+        except ImportError:
+            info["pot_provider_plugin"] = "not installed"
         return web.json_response(info)
 
     async def test_youtube(_: web.Request) -> web.Response:

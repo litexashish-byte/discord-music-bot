@@ -606,6 +606,57 @@ class Music(commands.Cog):
             log.error("Error in /testbypass: %s", e, exc_info=True)
             await safe_respond(interaction, error_embed("Something went wrong."))
 
+    @app_commands.command(name="directplay", description="Play a song DIRECTLY — bypasses queue, tests raw playback")
+    @app_commands.describe(query="Song name, artist, or paste a URL")
+    async def directplay(self, interaction: discord.Interaction, query: str) -> None:
+        """Play a song directly — no MusicPlayer, no queue. Just extract + play."""
+        try:
+            await interaction.response.defer()
+            vc = await self._ensure_voice(interaction)
+            if not vc:
+                return
+
+            await interaction.followup.send(
+                embed=info_embed("🔍 Direct Play", f"Extracting `{query}` …"), ephemeral=True
+            )
+
+            from utils.player import get_bypass, _get_ffmpeg
+            bypass = get_bypass()
+            result = await bypass.get_audio_url(query)
+            if not result:
+                await interaction.followup.send(
+                    embed=error_embed("Could not get audio URL."), ephemeral=True
+                )
+                return
+
+            stream_url, info = result
+            title = info.get("title", query)
+
+            ffmpeg = _get_ffmpeg()
+            source = discord.FFmpegOpusAudio(
+                stream_url,
+                executable=ffmpeg,
+                before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -user_agent \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36\"",
+            )
+            vc.stop()
+            vc.play(source)
+
+            embed = discord.Embed(
+                title="🎵 Direct Play",
+                description=f"**[{title}]({info.get('url', '')})**\nNow playing directly (no queue).",
+                color=0xA855F7,
+            )
+            if info.get("thumbnail"):
+                embed.set_thumbnail(url=info["thumbnail"])
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            log.error("Error in /directplay: %s", e, exc_info=True)
+            import traceback
+            await interaction.followup.send(
+                embed=error_embed(f"Direct play failed: {e}\n```{traceback.format_exc()[:2000]}```"),
+                ephemeral=True,
+            )
+
     @app_commands.command(name="testplay", description="Test audio playback with a fixed tone (no YouTube)")
     async def testplay(self, interaction: discord.Interaction) -> None:
         """Play a 440Hz tone directly — isolates ffmpeg vs YouTube issue."""

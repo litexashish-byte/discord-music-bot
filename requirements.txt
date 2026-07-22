@@ -1,6 +1,7 @@
 aiohttp
+bgutil-ytdlp-pot-provider>=2026.1.0
 cryptography
 discord.py[voice]
 imageio-ffmpeg
 PyNaCl
-yt-dlp
+yt-dlp>=2025.12.0
