@@ -606,6 +606,30 @@ class Music(commands.Cog):
             log.error("Error in /testbypass: %s", e, exc_info=True)
             await safe_respond(interaction, error_embed("Something went wrong."))
 
+    @app_commands.command(name="testplay", description="Test audio playback with a fixed tone (no YouTube)")
+    async def testplay(self, interaction: discord.Interaction) -> None:
+        """Play a 440Hz tone directly — isolates ffmpeg vs YouTube issue."""
+        try:
+            await interaction.response.defer()
+            vc = await self._ensure_voice(interaction)
+            if not vc:
+                return
+            from utils.player import _get_ffmpeg
+            ffmpeg_path = _get_ffmpeg()
+            source = discord.FFmpegOpusAudio(
+                "sine=frequency=440:duration=5",
+                executable=ffmpeg_path,
+                before_options="-f lavfi",
+            )
+            vc.stop()
+            vc.play(source)
+            await interaction.followup.send(
+                embed=info_embed("🔊 Test Playback", "Playing 440Hz tone for 5 seconds…\nChale to ffmpeg sahi hai, **extraction mein issue hai**.\nNa chale to **voice ya ffmpeg mein issue hai**.")
+            )
+        except Exception as e:
+            log.error("Error in /testplay: %s", e, exc_info=True)
+            await safe_respond(interaction, error_embed(f"Test play failed: {e}"))
+
     # ── Event listeners ────────────────────────────────────────────────
 
     @commands.Cog.listener()
