@@ -313,19 +313,23 @@ async def autocomplete_search(query: str) -> list[str]:
 def build_audio_source(
     stream_url: str, volume: int = 80, filter_key: str = DEFAULT_FILTER
 ) -> discord.FFmpegOpusAudio:
-    """Create an FFmpegOpusAudio with volume applied via ffmpeg filter."""
-    vol = volume / 100
+    """Create an FFmpegOpusAudio with optional filters."""
+    opts = "-vn"
     filter_opts = FILTERS.get(filter_key, FILTERS[DEFAULT_FILTER])["options"]
-    af_parts = [f"volume={vol}"]
-    if filter_opts:
-        af_parts.append(filter_opts)
-    ffmpeg_options = f"-vn -af {','.join(af_parts)}"
+    vol = volume / 100
+    if vol != 1.0 or filter_opts:
+        af_parts = []
+        if vol != 1.0:
+            af_parts.append(f"volume={vol}")
+        if filter_opts:
+            af_parts.append(filter_opts)
+        opts += f" -af {','.join(af_parts)}"
 
     return discord.FFmpegOpusAudio(
         stream_url,
         executable=_get_ffmpeg(),
         before_options=FFMPEG_BEFORE_OPTS,
-        options=ffmpeg_options,
+        options=opts,
     )
 
 

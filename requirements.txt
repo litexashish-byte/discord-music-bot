@@ -3,3 +3,4 @@ yt-dlp
 PyNaCl
 aiohttp
 imageio-ffmpeg
+js2py
