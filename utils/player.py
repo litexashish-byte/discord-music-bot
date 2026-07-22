@@ -32,44 +32,99 @@ def _get_ffmpeg() -> str:
 # yt-dlp configuration
 # ────────────────────────────────────────────────
 
+_COOKIES_FILE = "cookies.txt"
+
+def _try_cookies() -> dict[str, Any]:
+    """Return cookie file path if it exists locally."""
+    import os as _os
+    if _os.path.isfile(_COOKIES_FILE):
+        log.info("Using cookies file: %s", _COOKIES_FILE)
+        return {"cookiefile": _COOKIES_FILE}
+    return {}
+
 # Shared base options
 _BASE_OPTS: dict[str, Any] = {
     "format": "bestaudio/best",
     "nocheckcertificate": True,
-    "ignoreerrors": False,          # We want errors so we can handle them
+    "ignoreerrors": False,
     "logtostderr": False,
     "quiet": True,
     "no_warnings": True,
     "source_address": "0.0.0.0",
-    "socket_timeout": 20,
-    "retries": 3,
+    "socket_timeout": 30,
+    "retries": 5,
+    "extractor_retries": 3,
+    "fragment_retries": 5,
+    "ignore_no_formats_error": True,
+    "throttled_rate": "200M",
 }
+
+# Extractor args that work for bypass in 2026.
+# Android client is the least likely to be blocked by YouTube.
+_YOUTUBE_EXTRACTOR_ARGS: dict[str, Any] = {
+    "youtube": {
+        "player_client": ["android", "web", "ios", "tv_embedded", "tv"],
+        "player_skip": ["webpage", "configs"],
+        "skip": ["dash", "translated_thumbnails"],
+        "include_dash_manifest": False,
+        "include_info_json": False,
+    },
+}
+
+# cookies file (if present on disk)
+_COOKIE_OPTS = _try_cookies()
 
 # Search-only options — extract_flat avoids fetching stream URLs,
 # which prevents YouTube bot-detection from triggering during search.
 YTDL_SEARCH_OPTS: dict[str, Any] = {
     **_BASE_OPTS,
+    **_COOKIE_OPTS,
     "default_search": "ytsearch",
     "noplaylist": False,
     "extract_flat": "in_playlist",  # metadata only, no stream URL needed
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["tv", "ios"],
-        }
-    },
+    "extractor_args": _YOUTUBE_EXTRACTOR_ARGS,
 }
 
-# Stream-resolution options — uses TV client which bypasses YouTube bot detection.
-# tv_embedded is the most reliable client for server-side playback in 2026.
+# Stream-resolution options.
 YTDL_STREAM_OPTS: dict[str, Any] = {
     **_BASE_OPTS,
+    **_COOKIE_OPTS,
     "noplaylist": True,
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["tv_embedded", "tv", "ios"],
-        }
-    },
+    "extractor_args": _YOUTUBE_EXTRACTOR_ARGS,
 }
+
+# Fallback configs if the primary extraction fails (tried in order by resolve_stream_url)
+_STREAM_FALLBACK_CONFIGS: list[dict[str, Any]] = [
+    # Fallback 1: Android only (most permissive)
+    {
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android"],
+                "player_skip": ["webpage", "configs"],
+                "skip": ["dash", "translated_thumbnails"],
+            }
+        },
+    },
+    # Fallback 2: Web client with cookies simulation
+    {
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["web"],
+                "player_skip": ["webpage"],
+            }
+        },
+    },
+    # Fallback 3: iOS + tv combo
+    {
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["ios", "tv"],
+                "player_skip": ["webpage", "configs"],
+                "skip": ["dash", "translated_thumbnails"],
+            }
+        },
+    },
+]
 
 FFMPEG_BEFORE_OPTS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
 
@@ -141,9 +196,20 @@ async def search_tracks(query: str, requester: discord.Member) -> list[Track]:
         is_url = query.startswith(("http://", "https://"))
 
         if is_url:
-            # Direct URL: do a full extract with the stream-capable client
-            with _make_ytdl(YTDL_STREAM_OPTS) as ydl:
-                data = ydl.extract_info(query, download=False)
+            # Direct URL: try primary config, then fallbacks
+            configs = [YTDL_STREAM_OPTS] + _STREAM_FALLBACK_CONFIGS
+            data = None
+            for extra in configs:
+                opts = {**YTDL_STREAM_OPTS, **extra}
+                try:
+                    with _make_ytdl(opts) as ydl:
+                        data = ydl.extract_info(query, download=False)
+                    if data:
+                        break
+                except Exception:
+                    continue
+            if not data:
+                return []
         else:
             # Text search: use flat extraction to avoid bot detection
             search_query = f"ytsearch5:{query}"
@@ -172,36 +238,43 @@ async def search_tracks(query: str, requester: discord.Member) -> list[Track]:
 
 async def resolve_stream_url(track: Track) -> str:
     """
-    Fetch a fresh, playable stream URL using the TV client (bypasses bot detection).
-    Falls back to cached stream_url if resolution fails.
+    Fetch a fresh, playable stream URL.
+    Tries the primary config first, then falls back to alternative configs.
     """
     loop = asyncio.get_event_loop()
     page_url = track.get("url", "")
     if not page_url:
         return track.get("stream_url", "")
 
-    def _resolve() -> str:
-        with _make_ytdl(YTDL_STREAM_OPTS) as ydl:
-            data = ydl.extract_info(page_url, download=False)
-        if not data:
-            return ""
-        # Flatten playlist wrapper if needed
-        if "entries" in data:
-            data = data["entries"][0] if data["entries"] else {}
-        return data.get("url") or ""
+    configs = [YTDL_STREAM_OPTS] + _STREAM_FALLBACK_CONFIGS
 
-    try:
-        url = await asyncio.wait_for(loop.run_in_executor(None, _resolve), timeout=25)
-        if url:
-            return url
-        log.warning("resolve_stream_url got empty URL for '%s', using cached", track.get("title"))
-        return track.get("stream_url", "")
-    except asyncio.TimeoutError:
-        log.warning("resolve_stream_url timed out for '%s'", track.get("title"))
-        return track.get("stream_url", "")
-    except Exception as exc:
-        log.error("resolve_stream_url error for '%s': %s", track.get("title"), exc)
-        return track.get("stream_url", "")
+    for i, extra in enumerate(configs):
+        opts = {**YTDL_STREAM_OPTS, **extra}
+
+        def _resolve(opts=opts) -> str:
+            try:
+                with _make_ytdl(opts) as ydl:
+                    data = ydl.extract_info(page_url, download=False)
+                if not data:
+                    return ""
+                if "entries" in data:
+                    data = data["entries"][0] if data["entries"] else {}
+                return data.get("url") or ""
+            except Exception as exc:
+                log.debug("Config %d failed for '%s': %s", i, track.get("title"), exc)
+                return ""
+
+        try:
+            url = await asyncio.wait_for(loop.run_in_executor(None, _resolve), timeout=20)
+            if url:
+                if i > 0:
+                    log.info("Resolved '%s' with fallback config %d", track.get("title"), i)
+                return url
+        except asyncio.TimeoutError:
+            log.warning("Config %d timed out for '%s'", i, track.get("title"))
+
+    log.warning("All configs failed for '%s'", track.get("title"))
+    return track.get("stream_url", "")
 
 
 async def autocomplete_search(query: str) -> list[str]:
