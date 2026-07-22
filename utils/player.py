@@ -35,20 +35,36 @@ def _get_ffmpeg() -> str:
 _COOKIES_FILE = "cookies.txt"
 
 def _try_cookies() -> dict[str, Any]:
-    """Write cookies from env var if present, or use cookies.txt on disk."""
+    """Write cookies from env var (JSON → Netscape), or use cookies.txt on disk."""
     import os as _os
     import base64 as _b64
+    import json as _json
+
     b64 = _os.environ.get("YOUTUBE_COOKIES_B64")
     if b64:
         try:
             raw = _b64.b64decode(b64).decode("utf-8")
+            cookies = _json.loads(raw)
+            # Convert JSON cookies → Netscape format
+            lines = ["# Netscape HTTP Cookie File"]
+            for c in cookies:
+                domain = c.get("domain", "")
+                if not domain:
+                    continue
+                flag = "FALSE" if c.get("hostOnly", False) else "TRUE"
+                path = c.get("path", "/")
+                secure = "TRUE" if c.get("secure", False) else "FALSE"
+                expiry = str(int(c.get("expirationDate", 0) or 0))
+                name = c.get("name", "")
+                value = c.get("value", "")
+                lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{expiry}\t{name}\t{value}")
             with open(_COOKIES_FILE, "w", encoding="utf-8") as f:
-                f.write(raw)
-            log.info("Wrote cookies from YOUTUBE_COOKIES_B64 env var")
+                f.write("\n".join(lines) + "\n")
+            log.info("Wrote %d cookies (Netscape format) from YOUTUBE_COOKIES_B64", len(cookies))
         except Exception as exc:
-            log.warning("Failed to decode YOUTUBE_COOKIES_B64: %s", exc)
+            log.warning("Failed to process YOUTUBE_COOKIES_B64: %s", exc)
     if _os.path.isfile(_COOKIES_FILE):
-        log.info("Using cookies file: %s", _COOKIES_FILE)
+        log.info("Using cookies file: %s (%d bytes)", _COOKIES_FILE, _os.path.getsize(_COOKIES_FILE))
         return {"cookiefile": _COOKIES_FILE}
     return {}
 
