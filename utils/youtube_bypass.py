@@ -206,57 +206,88 @@ class YouTubeBypass:
         """Load cookies from YOUTUBE_COOKIES_B64 or cookies.txt.
         Tries multiple formats: base64 JSON → raw JSON → Netscape text.
         """
-        b64 = _os.environ.get("YOUTUBE_COOKIES_B64")
-        if b64:
-            raw = None
-            # Try 1: base64 decode → JSON
+        b64_raw = _os.environ.get("YOUTUBE_COOKIES_B64")
+        # If cookies.txt already exists, just use it
+        if _os.path.isfile(_COOKIES_FILE):
+            log.info("Using existing cookie file: %s (%d bytes)", _COOKIES_FILE, _os.path.getsize(_COOKIES_FILE))
+            return {"cookiefile": _COOKIES_FILE}
+
+        if not b64_raw:
+            return {}
+
+        # Strip whitespace/newlines that Render may inject
+        b64 = b64_raw.strip()
+
+        def _b64decode_padded(s: str) -> str | None:
+            """Safe base64 decode with auto-padding."""
             try:
-                raw = _b64.b64decode(b64).decode("utf-8")
+                return _b64.b64decode(s).decode("utf-8")
             except Exception:
                 pass
-            # Try 2: already plain JSON
-            if raw is None:
-                try:
-                    raw = b64  # assume already plaintext
-                except Exception:
-                    pass
-            if raw:
-                # Try JSON array of cookie objects
-                try:
-                    cookies = _json.loads(raw)
-                    if isinstance(cookies, list):
-                        lines = ["# Netscape HTTP Cookie File"]
-                        for c in cookies:
-                            domain = c.get("domain", "")
-                            if not domain:
-                                continue
-                            flag = "FALSE" if c.get("hostOnly", False) else "TRUE"
-                            path = c.get("path", "/")
-                            secure = "TRUE" if c.get("secure", False) else "FALSE"
-                            expiry = str(int(c.get("expirationDate", 0) or 0))
-                            name = c.get("name", "")
-                            value = c.get("value", "")
-                            lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{expiry}\t{name}\t{value}")
-                        with open(_COOKIES_FILE, "w", encoding="utf-8") as f:
-                            f.write("\n".join(lines) + "\n")
-                        log.info("Wrote %d cookies (Netscape format)", len(cookies))
-                        return {"cookiefile": _COOKIES_FILE}
-                except Exception:
-                    pass
-                # Try raw Netscape format
-                try:
-                    if raw.strip().startswith("#"):
-                        with open(_COOKIES_FILE, "w", encoding="utf-8") as f:
-                            f.write(raw)
-                        log.info("Wrote raw Netscape cookies file (%d bytes)", len(raw))
-                        return {"cookiefile": _COOKIES_FILE}
-                except Exception:
-                    pass
-            log.warning("YOUTUBE_COOKIES_B64 set but could not parse: first 80 chars=%s ...", b64[:80])
+            # Try with padding
+            try:
+                missing = 4 - len(s) % 4
+                if missing != 4:
+                    s += "=" * missing
+                return _b64.b64decode(s).decode("utf-8")
+            except Exception:
+                pass
+            # Try URL-safe variant
+            try:
+                s2 = s.replace("-", "+").replace("_", "/")
+                missing = 4 - len(s2) % 4
+                if missing != 4:
+                    s2 += "=" * missing
+                return _b64.b64decode(s2).decode("utf-8")
+            except Exception:
+                pass
+            return None
 
-        if _os.path.isfile(_COOKIES_FILE):
-            log.info("Using cookies: %s (%d bytes)", _COOKIES_FILE, _os.path.getsize(_COOKIES_FILE))
-            return {"cookiefile": _COOKIES_FILE}
+        raw = _b64decode_padded(b64)
+
+        # If base64 decode failed, treat env var as plaintext
+        if raw is None:
+            raw = b64
+
+        if not raw:
+            log.warning("YOUTUBE_COOKIES_B64 set but empty after decode")
+            return {}
+
+        # Try JSON array → Netscape format
+        try:
+            cookies = _json.loads(raw)
+            if isinstance(cookies, list):
+                lines = ["# Netscape HTTP Cookie File"]
+                for c in cookies:
+                    domain = c.get("domain", "")
+                    if not domain:
+                        continue
+                    flag = "FALSE" if c.get("hostOnly", False) else "TRUE"
+                    path = c.get("path", "/")
+                    secure = "TRUE" if c.get("secure", False) else "FALSE"
+                    expiry = str(int(c.get("expirationDate", 0) or 0))
+                    name = c.get("name", "")
+                    value = c.get("value", "")
+                    lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{expiry}\t{name}\t{value}")
+                with open(_COOKIES_FILE, "w", encoding="utf-8") as f:
+                    f.write("\n".join(lines) + "\n")
+                log.info("Wrote %d cookies (Netscape format) from JSON env var", len(cookies))
+                return {"cookiefile": _COOKIES_FILE}
+        except Exception:
+            pass
+
+        # Try raw Netscape format
+        try:
+            if raw.strip().startswith("#"):
+                with open(_COOKIES_FILE, "w", encoding="utf-8") as f:
+                    f.write(raw)
+                log.info("Wrote raw Netscape cookies file (%d bytes)", len(raw))
+                return {"cookiefile": _COOKIES_FILE}
+        except Exception:
+            pass
+
+        log.warning("YOUTUBE_COOKIES_B64 set but could not parse (len=%d, prefix=%s)",
+                     len(b64), b64[:80])
         return {}
 
     # ── yt-dlp helpers ─────────────────────────────────────────────────

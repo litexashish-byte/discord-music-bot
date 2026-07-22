@@ -156,6 +156,7 @@ async def _health_server() -> None:
         return web.Response(text="ok")
 
     async def debug(_: web.Request) -> web.Response:
+        import base64 as _b64
         info: dict[str, object] = {
             "status": "running",
             "has_token": bool(_os.environ.get("DISCORD_TOKEN")),
@@ -181,23 +182,29 @@ async def _health_server() -> None:
         # Show cookies env prefix (safe)
         cval = _os.environ.get("YOUTUBE_COOKIES_B64", "")
         if cval:
-            info["cookies_env_prefix"] = cval[:50] + "..."
+            info["cookies_env_prefix"] = cval[:80] + "..."
             info["cookies_env_length"] = len(cval)
-            # Try to decode to see format
-            try:
-                decoded = _b64.b64decode(cval).decode("utf-8")
-                info["cookies_decoded_prefix"] = decoded[:80]
+            # Try to decode with padding fix
+            def _try_decode(s: str) -> str | None:
+                s = s.strip()
+                for attempt in [s, s + "=" * (4 - len(s) % 4 if len(s) % 4 else 0),
+                                s.replace("-", "+").replace("_", "/")]:
+                    try:
+                        return _b64.b64decode(attempt).decode("utf-8")
+                    except Exception:
+                        continue
+                return None
+            decoded = _try_decode(cval)
+            if decoded:
+                info["cookies_decoded_prefix"] = decoded[:100]
                 try:
                     parsed = _json.loads(decoded)
                     is_list = isinstance(parsed, list)
                     info["cookies_parsed"] = f"{'list' if is_list else 'dict'}({len(parsed) if is_list else '?'})"
                 except Exception:
                     info["cookies_parsed"] = "not-json"
-            except Exception:
-                try:
-                    info["cookies_decoded_prefix"] = cval[:80] + "... (base64 decode failed, raw)"
-                except Exception:
-                    pass
+            else:
+                info["cookies_decode_failed"] = True
         return web.json_response(info)
 
     async def test_youtube(_: web.Request) -> web.Response:
