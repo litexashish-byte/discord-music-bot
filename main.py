@@ -277,29 +277,30 @@ async def _health_server() -> None:
             from utils.youtube_bypass import YouTubeBypass
             b = YouTubeBypass()
             loop = asyncio.get_event_loop()
-            configs = [b._stream_opts] + b._fallback_configs
+            # Test each setting individually
+            setting_tests = {
+                "base_clean": {
+                    "format": "bestaudio/best", "quiet": True, "no_warnings": True,
+                    "nocheckcertificate": True, "cookiefile": "cookies.txt",
+                },
+                "base+cookiefile": dict(b._stream_opts),
+                "base-min": {k: v for k, v in b._stream_opts.items() if k not in ("default_search", "noplaylist", "source_address", "throttled_rate", "sleep_interval_requests", "sleep_interval")},
+                "no_source_address": {k: v for k, v in b._stream_opts.items() if k != "source_address"},
+                "no_throttle": {k: v for k, v in b._stream_opts.items() if k not in ("throttled_rate", "sleep_interval_requests", "sleep_interval")},
+                "just_format_cookies": {"format": "bestaudio/best", "cookiefile": "cookies.txt", "quiet": True, "http_headers": {"User-Agent": "Mozilla/5.0 Chrome/125.0"}},
+            }
             bypass_debug_results = []
-            for idx, extra in enumerate(configs):
-                def _test_opts(opts=extra, idx=idx):
-                    base = dict(b._stream_opts)
-                    # Make a fresh copy with merger
-                    merged = {}
-                    for k in set(list(base.keys()) + list(opts.keys())):
-                        if k == "extractor_args" and k in base and k in opts:
-                            merged[k] = base[k].copy()
-                            merged[k].update(opts[k])
-                        else:
-                            merged[k] = opts.get(k, base.get(k))
-                    merged["quiet"] = True
+            for name, opts in setting_tests.items():
+                def _test(setting_opts=opts, name=name):
                     try:
-                        with yt_dlp.YoutubeDL(merged) as ydl:
+                        with yt_dlp.YoutubeDL(setting_opts) as ydl:
                             data = ydl.extract_info("https://www.youtube.com/watch?v=dQw4w9WgXcQ", download=False)
                             if data:
-                                return f"C{idx}:OK title={data.get('title','?')[:20]} has_url={bool(data.get('url'))}"
-                            return f"C{idx}:no_data"
+                                return f"{name}:OK url={bool(data.get('url'))}"
+                            return f"{name}:no_data"
                     except Exception as e:
-                        return f"C{idx}:FAIL {str(e)[:150]}"
-                r = await loop.run_in_executor(None, _test_opts)
+                        return f"{name}:FAIL {str(e)[:120]}"
+                r = await loop.run_in_executor(None, _test)
                 bypass_debug_results.append(r)
             bypass_debug = " | ".join(bypass_debug_results)
         except Exception as e:
