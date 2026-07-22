@@ -140,13 +140,59 @@ class LoMaza(commands.Bot):
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 async def _health_server() -> None:
-    """Minimal HTTP server for Render health checks."""
+    """Minimal HTTP server for Render health checks + debug info."""
     import aiohttp.web as web
+    import os as _os, json as _json
     app = web.Application()
+
     async def health(_: web.Request) -> web.Response:
         return web.Response(text="ok")
+
+    async def debug(_: web.Request) -> web.Response:
+        info: dict[str, object] = {
+            "status": "running",
+            "has_token": bool(_os.environ.get("DISCORD_TOKEN")),
+            "has_cookies_env": bool(_os.environ.get("YOUTUBE_COOKIES_B64")),
+            "cookies_file_exists": _os.path.isfile("cookies.txt"),
+        }
+        if info["cookies_file_exists"]:
+            try:
+                sz = _os.path.getsize("cookies.txt")
+                info["cookies_file_size"] = sz
+            except Exception:
+                pass
+        return web.json_response(info)
+
+    async def test_youtube(_: web.Request) -> web.Response:
+        """Test YouTube extraction with a known video ID."""
+        try:
+            import yt_dlp
+            import os
+            from utils.player import YTDL_STREAM_OPTS, _STREAM_FALLBACK_CONFIGS
+            configs = [YTDL_STREAM_OPTS] + _STREAM_FALLBACK_CONFIGS
+            video_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+            last_error = ""
+            for i, extra in enumerate(configs):
+                opts = {**YTDL_STREAM_OPTS, **extra}
+                try:
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        data = ydl.extract_info(video_url, download=False)
+                    if data:
+                        url = (data.get("entries") or [data])[0].get("url", "") if "entries" in data else data.get("url", "")
+                        if url:
+                            return web.json_response({"ok": True, "config": i, "has_url": True, "url_preview": url[:60]})
+                        return web.json_response({"ok": True, "config": i, "has_url": False, "title": data.get("title", "?")})
+                except Exception as e:
+                    last_error = str(e)[:200]
+                    continue
+            return web.json_response({"ok": False, "error": last_error or "All configs failed"})
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)[:200]})
+
     app.router.add_get("/", health)
-    port = int(os.environ.get("PORT", "10000"))
+    app.router.add_get("/debug", debug)
+    app.router.add_get("/test", test_youtube)
+    port = int(_os.environ.get("PORT", "10000"))
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
