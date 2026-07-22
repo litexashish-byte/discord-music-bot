@@ -37,7 +37,7 @@ class YouTubeBypass:
 
         # ── Base yt-dlp options ────────────────────────────────────────
         self._base_opts: dict[str, Any] = {
-            "format": "bestaudio[ext=m4a]/bestaudio/best",
+            "format": "bestaudio/best",
             "nocheckcertificate": True,
             "ignoreerrors": False,
             "logtostderr": False,
@@ -120,7 +120,7 @@ class YouTubeBypass:
                         "skip": ["dash", "translated_thumbnails", "hls"],
                     }
                 },
-                "format": "bestaudio[protocol=m3u8_native]/bestaudio/best",
+                "format": "bestaudio/best",
             },
             # 2. Web client with full extraction
             {
