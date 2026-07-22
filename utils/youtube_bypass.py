@@ -203,29 +203,56 @@ class YouTubeBypass:
 
     @staticmethod
     def _load_cookies() -> dict[str, Any]:
-        """Load cookies from YOUTUBE_COOKIES_B64 (JSON) or cookies.txt (Netscape)."""
+        """Load cookies from YOUTUBE_COOKIES_B64 or cookies.txt.
+        Tries multiple formats: base64 JSON → raw JSON → Netscape text.
+        """
         b64 = _os.environ.get("YOUTUBE_COOKIES_B64")
         if b64:
+            raw = None
+            # Try 1: base64 decode → JSON
             try:
                 raw = _b64.b64decode(b64).decode("utf-8")
-                cookies = _json.loads(raw)
-                lines = ["# Netscape HTTP Cookie File"]
-                for c in cookies:
-                    domain = c.get("domain", "")
-                    if not domain:
-                        continue
-                    flag = "FALSE" if c.get("hostOnly", False) else "TRUE"
-                    path = c.get("path", "/")
-                    secure = "TRUE" if c.get("secure", False) else "FALSE"
-                    expiry = str(int(c.get("expirationDate", 0) or 0))
-                    name = c.get("name", "")
-                    value = c.get("value", "")
-                    lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{expiry}\t{name}\t{value}")
-                with open(_COOKIES_FILE, "w", encoding="utf-8") as f:
-                    f.write("\n".join(lines) + "\n")
-                log.info("Wrote %d cookies (Netscape format)", len(cookies))
-            except Exception as exc:
-                log.warning("Failed to process YOUTUBE_COOKIES_B64: %s", exc)
+            except Exception:
+                pass
+            # Try 2: already plain JSON
+            if raw is None:
+                try:
+                    raw = b64  # assume already plaintext
+                except Exception:
+                    pass
+            if raw:
+                # Try JSON array of cookie objects
+                try:
+                    cookies = _json.loads(raw)
+                    if isinstance(cookies, list):
+                        lines = ["# Netscape HTTP Cookie File"]
+                        for c in cookies:
+                            domain = c.get("domain", "")
+                            if not domain:
+                                continue
+                            flag = "FALSE" if c.get("hostOnly", False) else "TRUE"
+                            path = c.get("path", "/")
+                            secure = "TRUE" if c.get("secure", False) else "FALSE"
+                            expiry = str(int(c.get("expirationDate", 0) or 0))
+                            name = c.get("name", "")
+                            value = c.get("value", "")
+                            lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{expiry}\t{name}\t{value}")
+                        with open(_COOKIES_FILE, "w", encoding="utf-8") as f:
+                            f.write("\n".join(lines) + "\n")
+                        log.info("Wrote %d cookies (Netscape format)", len(cookies))
+                        return {"cookiefile": _COOKIES_FILE}
+                except Exception:
+                    pass
+                # Try raw Netscape format
+                try:
+                    if raw.strip().startswith("#"):
+                        with open(_COOKIES_FILE, "w", encoding="utf-8") as f:
+                            f.write(raw)
+                        log.info("Wrote raw Netscape cookies file (%d bytes)", len(raw))
+                        return {"cookiefile": _COOKIES_FILE}
+                except Exception:
+                    pass
+            log.warning("YOUTUBE_COOKIES_B64 set but could not parse: first 80 chars=%s ...", b64[:80])
 
         if _os.path.isfile(_COOKIES_FILE):
             log.info("Using cookies: %s (%d bytes)", _COOKIES_FILE, _os.path.getsize(_COOKIES_FILE))

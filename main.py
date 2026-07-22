@@ -178,10 +178,43 @@ async def _health_server() -> None:
             info["pot_provider_plugin"] = "bgutil-ytdlp-pot-provider (installed)"
         except ImportError:
             info["pot_provider_plugin"] = "not installed"
+        # Show cookies env prefix (safe)
+        cval = _os.environ.get("YOUTUBE_COOKIES_B64", "")
+        if cval:
+            info["cookies_env_prefix"] = cval[:50] + "..."
+            info["cookies_env_length"] = len(cval)
+            # Try to decode to see format
+            try:
+                decoded = _b64.b64decode(cval).decode("utf-8")
+                info["cookies_decoded_prefix"] = decoded[:80]
+                try:
+                    parsed = _json.loads(decoded)
+                    is_list = isinstance(parsed, list)
+                    info["cookies_parsed"] = f"{'list' if is_list else 'dict'}({len(parsed) if is_list else '?'})"
+                except Exception:
+                    info["cookies_parsed"] = "not-json"
+            except Exception:
+                try:
+                    info["cookies_decoded_prefix"] = cval[:80] + "... (base64 decode failed, raw)"
+                except Exception:
+                    pass
         return web.json_response(info)
 
     async def test_youtube(_: web.Request) -> web.Response:
         """Test YouTube bypass with a known video ID."""
+        import traceback, base64 as _b64
+        # Check cookies file content
+        cookies_file_ok = _os.path.isfile("cookies.txt")
+        cookies_file_content = ""
+        if cookies_file_ok:
+            try:
+                with open("cookies.txt", "r", encoding="utf-8") as f:
+                    cookies_file_content = f.read(200)
+            except Exception:
+                pass
+        # Check env var
+        env_val = _os.environ.get("YOUTUBE_COOKIES_B64", "")
+        env_prefix = env_val[:60] if env_val else ""
         try:
             from utils.youtube_bypass import YouTubeBypass
             bypass = YouTubeBypass()
@@ -189,13 +222,34 @@ async def _health_server() -> None:
             if result:
                 url, info = result
                 return web.json_response({
-                    "ok": True, "has_url": True, "url_preview": url[:60],
+                    "ok": True,
+                    "has_url": True,
+                    "url_preview": url[:80],
                     "title": info.get("title", "?"),
                     "duration_text": info.get("duration_text", "?"),
                 })
-            return web.json_response({"ok": False, "error": "Bypass returned no result"})
+            return web.json_response({
+                "ok": False,
+                "error": "Bypass returned no result",
+                "debug": {
+                    "cookies_file_exists": cookies_file_ok,
+                    "cookies_file_content_prefix": cookies_file_content,
+                    "cookies_env_prefix": env_prefix,
+                    "cookies_env_length": len(env_val) if env_val else 0,
+                }
+            })
         except Exception as e:
-            return web.json_response({"ok": False, "error": str(e)[:200]})
+            tb = traceback.format_exc()
+            return web.json_response({
+                "ok": False,
+                "error": str(e)[:300],
+                "traceback": tb[-500:],
+                "debug": {
+                    "cookies_file_exists": cookies_file_ok,
+                    "cookies_file_content_prefix": cookies_file_content,
+                    "cookies_env_prefix": env_prefix,
+                }
+            })
 
     async def state(_: web.Request) -> web.Response:
         """Return player state for all guilds."""
