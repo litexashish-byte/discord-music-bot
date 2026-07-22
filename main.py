@@ -278,16 +278,17 @@ async def _health_server() -> None:
             b = YouTubeBypass()
             loop = asyncio.get_event_loop()
             # Test each setting individually
+            sopts = dict(b._stream_opts)
             setting_tests = {
                 "base_clean": {
                     "format": "bestaudio/best", "quiet": True, "no_warnings": True,
                     "nocheckcertificate": True, "cookiefile": "cookies.txt",
                 },
-                "base+cookiefile": dict(b._stream_opts),
-                "base-min": {k: v for k, v in b._stream_opts.items() if k not in ("default_search", "noplaylist", "source_address", "throttled_rate", "sleep_interval_requests", "sleep_interval")},
-                "no_source_address": {k: v for k, v in b._stream_opts.items() if k != "source_address"},
-                "no_throttle": {k: v for k, v in b._stream_opts.items() if k not in ("throttled_rate", "sleep_interval_requests", "sleep_interval")},
-                "just_format_cookies": {"format": "bestaudio/best", "cookiefile": "cookies.txt", "quiet": True, "http_headers": {"User-Agent": "Mozilla/5.0 Chrome/125.0"}},
+                "stream_opts": sopts,
+                "no_headers": {k: v for k, v in sopts.items() if k != "http_headers"},
+                "ua_only": {**{k: v for k, v in sopts.items() if k != "http_headers"}, "http_headers": {"User-Agent": "Mozilla/5.0 Chrome/125.0"}},
+                "no_accept_enc": {**sopts, "http_headers": {k: v for k, v in sopts.get("http_headers", {}).items() if k != "Accept-Encoding"}},
+                "keys_check": str(sorted(sopts.keys())),
             }
             bypass_debug_results = []
             for name, opts in setting_tests.items():
