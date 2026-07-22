@@ -40,6 +40,29 @@ def _get_ffmpeg() -> str:
 
 FFMPEG_BEFORE_OPTS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
 
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
+
+def _build_ffmpeg_before(cookies_file: str = "cookies.txt") -> str:
+    """Return before_options with reconnect + browser User-Agent + cookies."""
+    import os as _os
+    cmd = f'{FFMPEG_BEFORE_OPTS} -user_agent "{UA}"'
+    if _os.path.isfile(cookies_file):
+        try:
+            with open(cookies_file) as f:
+                pairs = []
+                for line in f:
+                    if line.startswith("#") or not line.strip():
+                        continue
+                    cols = line.strip().split("\t")
+                    if len(cols) >= 7:
+                        pairs.append(f"{cols[5]}={cols[6]}")
+            if pairs:
+                cookie_val = "; ".join(pairs)
+                cmd += f' -headers "Cookie: {cookie_val}"'
+        except Exception:
+            pass
+    return cmd
+
 
 class Track(TypedDict, total=False):
     title: str
@@ -115,7 +138,7 @@ def build_audio_source(
     return discord.FFmpegOpusAudio(
         stream_url,
         executable=_get_ffmpeg(),
-        before_options=FFMPEG_BEFORE_OPTS,
+        before_options=_build_ffmpeg_before(),
         options=ffmpeg_options,
     )
 
