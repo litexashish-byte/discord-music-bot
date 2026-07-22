@@ -209,105 +209,6 @@ async def _health_server() -> None:
 
     async def test_youtube(_: web.Request) -> web.Response:
         """Test YouTube bypass with a known video ID."""
-        import traceback, base64 as _b64
-        # Check cookies file content
-        cookies_file_ok = _os.path.isfile("cookies.txt")
-        cookies_file_content = ""
-        if cookies_file_ok:
-            try:
-                with open("cookies.txt", "r", encoding="utf-8") as f:
-                    cookies_file_content = f.read(300)
-            except Exception:
-                pass
-        # Check env var
-        env_val = _os.environ.get("YOUTUBE_COOKIES_B64", "")
-        env_prefix = env_val[:60] if env_val else ""
-        # Manually test cookie writing
-        manual_cookie_result = "not_tried"
-        try:
-            from utils.youtube_bypass import YouTubeBypass
-            cookie_opts = YouTubeBypass._load_cookies()
-            manual_cookie_result = f"cookies_file_exists={_os.path.isfile('cookies.txt')}, opts_keys={list(cookie_opts.keys())}, opts_cookiefile={cookie_opts.get('cookiefile', '')}"
-        except Exception as e:
-            manual_cookie_result = f"error={e}"
-        # Try yt-dlp directly with multiple format options
-        yt_result = "not_tried"
-        try:
-            import yt_dlp
-            loop = asyncio.get_event_loop()
-            format_tests = [
-                "bestaudio[ext=m4a]/bestaudio/best",
-                "bestaudio/best",
-                "worstaudio/worst",
-                "bestaudio[protocol=m3u8_native]/bestaudio/best",
-                "worstaudio",
-            ]
-            yt_results = []
-            for fmt in format_tests:
-                def _test(fmt=fmt):
-                    opts = {
-                        "format": fmt,
-                        "quiet": True,
-                        "no_warnings": True,
-                        "nocheckcertificate": True,
-                        "cookiefile": "cookies.txt",
-                        "http_headers": {
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36",
-                        },
-                    }
-                    with yt_dlp.YoutubeDL(opts) as ydl:
-                        try:
-                            data = ydl.extract_info("https://www.youtube.com/watch?v=dQw4w9WgXcQ", download=False)
-                            if data:
-                                return f"OK: title={data.get('title','?')[:30]}, has_url={bool(data.get('url'))}"
-                        except Exception as e:
-                            return f"FAIL: {str(e)[:100]}"
-                        return "no_data"
-                r = await loop.run_in_executor(None, _test)
-                yt_results.append(f"{fmt}=>{r}")
-            yt_result = " | ".join(yt_results)
-        except Exception as e:
-            import traceback
-            yt_result = f"EXCEPTION: {str(e)[:200]} | {traceback.format_exc()[-300:]}"
-
-        # Test with EXACT bypass options to find which setting breaks it
-        bypass_debug = "not_tried"
-        try:
-            import yt_dlp
-            from utils.youtube_bypass import YouTubeBypass
-            b = YouTubeBypass()
-            loop = asyncio.get_event_loop()
-            # Test each setting individually
-            sopts = dict(b._stream_opts)
-            setting_tests = {
-                "base_clean": {
-                    "format": "bestaudio/best", "quiet": True, "no_warnings": True,
-                    "nocheckcertificate": True, "cookiefile": "cookies.txt",
-                },
-                "stream_opts": sopts,
-                "no_headers": {k: v for k, v in sopts.items() if k != "http_headers"},
-                "ua_only": {**{k: v for k, v in sopts.items() if k != "http_headers"}, "http_headers": {"User-Agent": "Mozilla/5.0 Chrome/125.0"}},
-                "no_accept_enc": {**sopts, "http_headers": {k: v for k, v in sopts.get("http_headers", {}).items() if k != "Accept-Encoding"}},
-                "keys_check": str(sorted(sopts.keys())),
-            }
-            bypass_debug_results = []
-            for name, opts in setting_tests.items():
-                def _test(setting_opts=opts, name=name):
-                    try:
-                        with yt_dlp.YoutubeDL(setting_opts) as ydl:
-                            data = ydl.extract_info("https://www.youtube.com/watch?v=dQw4w9WgXcQ", download=False)
-                            if data:
-                                return f"{name}:OK url={bool(data.get('url'))}"
-                            return f"{name}:no_data"
-                    except Exception as e:
-                        return f"{name}:FAIL {str(e)[:120]}"
-                r = await loop.run_in_executor(None, _test)
-                bypass_debug_results.append(r)
-            bypass_debug = " | ".join(bypass_debug_results)
-        except Exception as e:
-            import traceback
-            bypass_debug = f"EXCEPTION: {e} {traceback.format_exc()[-300:]}"
-
         from utils.youtube_bypass import YouTubeBypass
         bypass = YouTubeBypass()
         result = await bypass.get_audio_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
@@ -319,22 +220,11 @@ async def _health_server() -> None:
                 "url_preview": url[:80],
                 "title": info.get("title", "?"),
                 "duration_text": info.get("duration_text", "?"),
-                "manual_cookie_result": manual_cookie_result,
-                "yt_direct_test": yt_result,
-                "bypass_debug": bypass_debug,
             })
         return web.json_response({
             "ok": False,
             "error": "Bypass returned no result",
-            "manual_cookie_result": manual_cookie_result,
-            "yt_direct_test": yt_result,
-            "bypass_debug": bypass_debug,
-            "debug": {
-                "cookies_file_exists": cookies_file_ok,
-                "cookies_file_content_prefix": cookies_file_content,
-                "cookies_env_prefix": env_prefix,
-                "cookies_env_length": len(env_val) if env_val else 0,
-            }
+            "cookies_file_exists": _os.path.isfile("cookies.txt"),
         })
 
     async def state(_: web.Request) -> web.Response:

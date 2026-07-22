@@ -38,8 +38,6 @@ def _get_ffmpeg() -> str:
 FFMPEG_BEFORE = (
     "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
     "-rw_timeout 30000000 -analyzeduration 0 "
-    "-user_agent \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36\""
 )
 
 
